@@ -55,7 +55,6 @@ void mouse_init(void) {
     mouse_wait(1); outb(0x60, cmd | 2);
 
     mouse_write(0xF6); mouse_read();
-    mouse_write(0xF4); mouse_read();
 
     mouse_cycle = 0;
     isr_register(0x2C, mouse_irq);

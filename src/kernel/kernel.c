@@ -140,15 +140,6 @@ void kernel_main(void) {
     else        gfx_puts("[--] FAT12: no filesystem\n");
 
     task_init();
-
-    serial_write_str("create shell task\n");
-    task_create((void (*)(void *))shell_loop, 0);
-
-    serial_write_str("create idle task\n");
-    task_create(idle_task, 0);
-
-    serial_write_str("=== multitasking started ===\n");
-    pic_unmask_irq(0);
-    __asm__("sti");
-    for (;;) __asm__ volatile("hlt");
+    serial_write_str("tasks ready\n");
+    shell_loop();
 }

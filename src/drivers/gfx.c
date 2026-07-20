@@ -30,10 +30,8 @@ void gfx_init(void) {
     gfx_fb    = (u8 *)vbe[0];
     gfx_w     = (int)vbe[1];
     gfx_h     = (int)vbe[2];
-    gfx_bpp   = (int)vbe[3];
-    gfx_pitch = (int)vbe[4];
-    int min_pitch = gfx_w * (gfx_bpp / 8);
-    if (gfx_pitch < min_pitch) gfx_pitch = min_pitch;
+    gfx_bpp   = 32;
+    gfx_pitch = gfx_w * 4;
     gfx_cols  = gfx_w / FONT_W;
     gfx_rows  = gfx_h / FONT_H;
     init_palette();

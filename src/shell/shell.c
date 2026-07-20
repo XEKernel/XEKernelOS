@@ -11,7 +11,7 @@
 
 static char buf[CMD_BUF];
 
-static int strcmp_ci(const char *a, const char *b) {
+static int __attribute__((noinline)) strcmp_ci(const char *a, const char *b) {
     while (*a && *b) {
         char ca = (*a >= 'a' && *a <= 'z') ? *a - 32 : *a;
         char cb = (*b >= 'a' && *b <= 'z') ? *b - 32 : *b;
@@ -21,7 +21,7 @@ static int strcmp_ci(const char *a, const char *b) {
     return (u8)*a - (u8)*b;
 }
 
-static int strncmp_ci(const char *a, const char *b, int n) {
+static int __attribute__((noinline)) strncmp_ci(const char *a, const char *b, int n) {
     for (int i = 0; i < n; i++) {
         char ca = (a[i]>='a'&&a[i]<='z') ? a[i]-32 : a[i];
         char cb = (b[i]>='a'&&b[i]<='z') ? b[i]-32 : b[i];

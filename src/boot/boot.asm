@@ -70,9 +70,9 @@ real_start:
     int 0x13
     jc _err
 
-; load kernel part3 (LBA 54-56, 3 sectors) to 0x24A00
+; load kernel part3 (LBA 54-57, 4 sectors) to 0x24A00
     mov ah, 0x02
-    mov al, 3
+    mov al, 4
     mov ch, 1
     mov cl, 1
     mov dh, 1
@@ -80,6 +80,19 @@ real_start:
     push 0x2000
     pop es
     mov bx, 0x4A00
+    int 0x13
+    jc _err
+
+; load kernel part4 (LBA 58-62, 5 sectors) to 0x25200
+    mov ah, 0x02
+    mov al, 5
+    mov ch, 1
+    mov cl, 5
+    mov dh, 1
+    mov dl, 0x00
+    push 0x2000
+    pop es
+    mov bx, 0x5200
     int 0x13
     jc _err
 

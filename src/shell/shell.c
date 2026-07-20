@@ -331,7 +331,22 @@ static void cmd_shutdown(void) {
     __asm__ volatile("0: hlt; jmp 0b");
 }
 
+static u32 shell_esp;
+
+void shell_save_esp(void) {
+    __asm__ volatile("movl %%esp, %0" : "=m"(shell_esp));
+}
+
+void shell_recover(registers_t *r) {
+    r->eip    = (u32)shell_loop;
+    r->cs     = 0x18;
+    r->_esp   = shell_esp;
+    r->eflags = 0x202;
+    r->eax    = 0;
+}
+
 void shell_loop(void) {
+    shell_save_esp();
     gfx_puts("\n");
     for (;;) {
         gfx_set_fg(COLOR_LGREEN);

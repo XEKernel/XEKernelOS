@@ -2,6 +2,8 @@
 #include "kernel/panic.h"
 #include "kernel/task.h"
 #include "drivers/gfx.h"
+#include "drivers/keyboard.h"
+#include "shell/shell.h"
 #include "lib/ports.h"
 
 static void (*handlers[256])(void);
@@ -18,6 +20,10 @@ void c_isr_handler(registers_t *r) {
     if (handlers[vec]) handlers[vec]();
 
     if (vec == 0x20) {
+        if (kb_ctrl_c()) {
+            shell_recover(r);
+            return;
+        }
         schedule(r);
         return;
     }

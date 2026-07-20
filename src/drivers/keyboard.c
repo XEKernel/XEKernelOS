@@ -90,3 +90,16 @@ void kb_readline(char *b, int max) {
 void kb_flush(void) {
     while (inb(KB_STATUS) & 1) inb(KB_DATA);
 }
+
+static volatile int ctrl_held;
+
+int kb_ctrl_c(void) {
+    u8 st = inb(KB_STATUS);
+    if (!(st & 1)) return 0;
+    u8 data = inb(KB_DATA);
+
+    if (data == 0x1D)      { ctrl_held = 1; return 0; }
+    if (data == 0x9D)      { ctrl_held = 0; return 0; }
+    if (data == 0x2E && ctrl_held) return 1;
+    return 0;
+}

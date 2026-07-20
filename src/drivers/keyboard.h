@@ -8,3 +8,4 @@ void kb_init(void);
 char kb_getchar(void);
 void kb_readline(char *b, int max);
 void kb_flush(void);
+int  kb_ctrl_c(void);

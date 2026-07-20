@@ -6,6 +6,7 @@
 #include "drivers/mouse.h"
 #include "kernel/mm.h"
 #include "kernel/user.h"
+#include "kernel/loader.h"
 #include "fs/fat12.h"
 #include "lib/ports.h"
 
@@ -87,7 +88,9 @@ static void cmd_help(void) {
     gfx_puts("  DIR      - List current directory\n");
     gfx_puts("  MKDIR <n>- Create directory\n");
     gfx_puts("  MOUSE    - Show mouse pos\n");
-    gfx_puts("  RUN      - Switch to Ring 3\n");
+    gfx_puts("  RUN <f>  - Load and run binary\n");
+    gfx_puts("  CREATE <f> <c> - Create file\n");
+    gfx_puts("  RM <f>   - Delete file\n");
     gfx_puts("  ECHO <t> - Print text\n");
     gfx_puts("  REBOOT   - Restart\n");
     gfx_puts("  SHUTDOWN - Halt CPU\n");
@@ -229,9 +232,37 @@ static void user_loop(void) {
     for (;;) __asm__ volatile("pause");
 }
 
-static void cmd_run(void) {
-    gfx_puts("Switching to Ring 3...\n");
-    user_run(user_loop);
+static void cmd_run(const char *args) {
+    while (*args == ' ') args++;
+    if (!*args) {
+        gfx_puts("Usage: RUN <filename>\n");
+        return;
+    }
+    if (load_binary(args) != 0)
+        gfx_puts("Failed to load program.\n");
+}
+
+static void cmd_create(const char *args) {
+    while (*args == ' ') args++;
+    if (!*args) { gfx_puts("Usage: CREATE <name> <content>\n"); return; }
+    char fname[64];
+    int i = 0;
+    while (*args && *args != ' ' && i < 63) fname[i++] = *args++;
+    fname[i] = 0;
+    while (*args == ' ') args++;
+    if (!*args) { gfx_puts("Usage: CREATE <name> <content>\n"); return; }
+    u32 len = 0;
+    while (args[len]) len++;
+    int r = fat_write_file(fname, (const u8 *)args, len);
+    if (r == 0) gfx_puts("OK\n");
+    else        gfx_puts("FAIL\n");
+}
+
+static void cmd_rm(const char *args) {
+    while (*args == ' ') args++;
+    if (!*args) { gfx_puts("Usage: RM <name>\n"); return; }
+    if (fat_delete_file(args) == 0) gfx_puts("OK\n");
+    else                            gfx_puts("Not found.\n");
 }
 
 static void cmd_reboot(void) {
@@ -282,8 +313,14 @@ void shell_loop(void) {
             cmd_cat(buf + 4);
         else if (!strcmp_ci(buf, "MOUSE"))
             cmd_mouse();
+        else if (!strncmp_ci(buf, "RUN ", 4))
+            cmd_run(buf + 4);
         else if (!strcmp_ci(buf, "RUN"))
-            cmd_run();
+            cmd_run("");
+        else if (!strncmp_ci(buf, "CREATE ", 7))
+            cmd_create(buf + 7);
+        else if (!strncmp_ci(buf, "RM ", 3))
+            cmd_rm(buf + 3);
         else if (!strncmp_ci(buf, "ECHO", 4)) {
             const char *a = buf + 4;
             while (*a == ' ') a++;

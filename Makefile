@@ -23,6 +23,8 @@ IDT_C    = $(SRCDIR)/kernel/idt.c
 MM_C     = $(SRCDIR)/kernel/mm.c
 PAGING_C = $(SRCDIR)/kernel/paging.c
 USER_C   = $(SRCDIR)/kernel/user.c
+PANIC_C  = $(SRCDIR)/kernel/panic.c
+SYSCALL_C = $(SRCDIR)/kernel/syscall.c
 VGA_C    = $(SRCDIR)/drivers/vga.c
 KB_C     = $(SRCDIR)/drivers/keyboard.c
 PIC_C    = $(SRCDIR)/drivers/pic.c
@@ -35,7 +37,7 @@ FAT_C    = $(SRCDIR)/fs/fat12.c
 SHELL_C  = $(SRCDIR)/shell/shell.c
 HEAP_C   = $(SRCDIR)/lib/heap.c
 
-C_SRCS   = $(KERN_C) $(ISR_C) $(IDT_C) $(MM_C) $(PAGING_C) $(USER_C) $(VGA_C) $(KB_C) $(PIC_C) $(PIT_C) $(MOUSE_C) $(ATA_C) $(GFX_C) $(SERIAL_C) $(FAT_C) $(SHELL_C) $(HEAP_C)
+C_SRCS   = $(KERN_C) $(ISR_C) $(IDT_C) $(MM_C) $(PAGING_C) $(USER_C) $(PANIC_C) $(SYSCALL_C) $(VGA_C) $(KB_C) $(PIC_C) $(PIT_C) $(MOUSE_C) $(ATA_C) $(GFX_C) $(SERIAL_C) $(FAT_C) $(SHELL_C) $(HEAP_C)
 C_OBJS   = $(patsubst $(SRCDIR)/%.c,$(BLDDIR)/%.o,$(C_SRCS))
 
 BOOT_BIN   = $(BLDDIR)/boot.bin

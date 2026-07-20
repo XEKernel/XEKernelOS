@@ -52,6 +52,9 @@ ISR_NOERR 29
 ISR_NOERR 30
 ISR_NOERR 31
 
+; 系统调用 (int 0x80)
+ISR_NOERR 128
+
 ; IRQ handlers (mapped to 0x20-0x2F after PIC remap)
 %assign i 0
 %rep 16

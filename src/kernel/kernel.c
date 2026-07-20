@@ -8,6 +8,7 @@
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
 #include "lib/heap.h"
+#include "lib/list.h"
 #include "kernel/isr.h"
 #include "kernel/idt.h"
 #include "kernel/mm.h"
@@ -67,6 +68,22 @@ void kernel_main(void) {
         } else {
             serial_write_str("heap test: FAIL\n");
         }
+    }
+
+    {
+        struct list_head head;
+        struct test_item { int val; struct list_head list; } a, b, c;
+        list_init(&head);
+        a.val = 1; b.val = 2; c.val = 3;
+        list_add_tail(&a.list, &head);
+        list_add_tail(&b.list, &head);
+        list_add_tail(&c.list, &head);
+        struct list_head *pos;
+        int sum = 0;
+        list_for_each(pos, &head)
+            sum += container_of(pos, struct test_item, list)->val;
+        if (sum == 6) serial_write_str("list test passed\n");
+        else           serial_write_str("list test FAIL\n");
     }
 
 #if 0

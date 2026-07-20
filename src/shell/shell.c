@@ -215,7 +215,19 @@ static void cmd_mouse(void) {
     gfx_puts(" BTN="); gfx_put_hex_u32(btn); gfx_putc('\n');
 }
 
-static void user_loop(void) { for (;;) __asm__ volatile("pause"); }
+static const char ring3_msg[] = "Ring3: Hello!";
+
+static void user_loop(void) {
+    u32 addr = (u32)ring3_msg;
+    __asm__ volatile(
+        "mov $1, %%eax\n"
+        "mov %0, %%ebx\n"
+        "mov $14, %%ecx\n"
+        "int $0x80\n"
+        : : "r"(addr) : "eax", "ebx", "ecx"
+    );
+    for (;;) __asm__ volatile("pause");
+}
 
 static void cmd_run(void) {
     gfx_puts("Switching to Ring 3...\n");

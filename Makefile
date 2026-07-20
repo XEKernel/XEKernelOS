@@ -1,10 +1,10 @@
-# XEKernelOS Makefile — Multi-File Build
+# XEKernelOS Makefile — C++ Build
 #   Boot:      boot.asm + stage2.asm (NASM)
-#   ISR:       isr.asm (NASM elf32)
-#   Kernel:    kernel.c + idt.c + mm.c + keyboard.c + pic.c + shell.c
+#   ISR asm:   isr.asm (NASM elf32)
+#   Kernel:    C++ sources
 
 NASM     = nasm
-CLANG    = clang
+CXX      = clang++
 LD       = ld.lld
 OBJCOPY  = llvm-objcopy
 TARGET   = i686-elf
@@ -14,33 +14,34 @@ BLDDIR   = build
 
 BOOT_SRC   = $(SRCDIR)/boot/boot.asm
 STAGE2_SRC = $(SRCDIR)/boot/stage2.asm
-ISR_SRC    = $(SRCDIR)/kernel/isr.asm
+ISR_ASM    = $(SRCDIR)/kernel/isr.asm
 LINKER_SRC = $(SRCDIR)/linker.ld
 
-KERN_C   = $(SRCDIR)/kernel/kernel.c
-ISR_C    = $(SRCDIR)/kernel/isr.c
-IDT_C    = $(SRCDIR)/kernel/idt.c
-MM_C     = $(SRCDIR)/kernel/mm.c
-PAGING_C = $(SRCDIR)/kernel/paging.c
-USER_C   = $(SRCDIR)/kernel/user.c
-PANIC_C  = $(SRCDIR)/kernel/panic.c
-SYSCALL_C = $(SRCDIR)/kernel/syscall.c
-TASK_C    = $(SRCDIR)/kernel/task.c
-LOADER_C  = $(SRCDIR)/kernel/loader.c
-KB_C     = $(SRCDIR)/drivers/keyboard.c
-PIC_C    = $(SRCDIR)/drivers/pic.c
-PIT_C    = $(SRCDIR)/drivers/pit.c
-MOUSE_C  = $(SRCDIR)/drivers/mouse.c
-ATA_C    = $(SRCDIR)/drivers/ata.c
-GFX_C    = $(SRCDIR)/drivers/gfx.c
-SERIAL_C = $(SRCDIR)/drivers/serial.c
-FAT_C    = $(SRCDIR)/fs/fat12.c
-SHELL_C  = $(SRCDIR)/shell/shell.c
-HEAP_C   = $(SRCDIR)/lib/heap.c
-STRUTIL_C = $(SRCDIR)/lib/strutil.c
+# All C++ sources
+CXX_SRCS := $(SRCDIR)/kernel/kernel.cpp \
+            $(SRCDIR)/kernel/isr.cpp \
+            $(SRCDIR)/kernel/idt.cpp \
+            $(SRCDIR)/kernel/mm.cpp \
+            $(SRCDIR)/kernel/paging.cpp \
+            $(SRCDIR)/kernel/user.cpp \
+            $(SRCDIR)/kernel/panic.cpp \
+            $(SRCDIR)/kernel/syscall.cpp \
+            $(SRCDIR)/kernel/task.cpp \
+            $(SRCDIR)/kernel/loader.cpp \
+            $(SRCDIR)/drivers/keyboard.cpp \
+            $(SRCDIR)/drivers/pic.cpp \
+            $(SRCDIR)/drivers/pit.cpp \
+            $(SRCDIR)/drivers/mouse.cpp \
+            $(SRCDIR)/drivers/ata.cpp \
+            $(SRCDIR)/drivers/gfx.cpp \
+            $(SRCDIR)/drivers/serial.cpp \
+            $(SRCDIR)/fs/fat12.cpp \
+            $(SRCDIR)/shell/shell.cpp \
+            $(SRCDIR)/lib/heap.cpp \
+            $(SRCDIR)/lib/strutil.cpp \
+            $(SRCDIR)/lib/cpprt.cpp
 
-C_SRCS   = $(KERN_C) $(ISR_C) $(IDT_C) $(MM_C) $(PAGING_C) $(USER_C) $(PANIC_C) $(SYSCALL_C) $(TASK_C) $(LOADER_C) $(KB_C) $(PIC_C) $(PIT_C) $(MOUSE_C) $(ATA_C) $(GFX_C) $(SERIAL_C) $(FAT_C) $(SHELL_C) $(HEAP_C) $(STRUTIL_C)
-C_OBJS   = $(patsubst $(SRCDIR)/%.c,$(BLDDIR)/%.o,$(C_SRCS))
+CXX_OBJS = $(patsubst $(SRCDIR)/%.cpp,$(BLDDIR)/%.o,$(CXX_SRCS))
 
 BOOT_BIN   = $(BLDDIR)/boot.bin
 STAGE2_BIN = $(BLDDIR)/stage2.bin
@@ -52,8 +53,9 @@ HELLO_BIN  = $(BLDDIR)/hello.bin
 
 USER_ASM   = $(SRCDIR)/user/hello.asm
 
-CFLAGS  = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
-          -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
+CXXFLAGS = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
+           -fno-exceptions -fno-rtti -fno-use-cxa-atexit -std=c++17 \
+           -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
 LDFLAGS = -m elf_i386
 
 .PHONY: all run clean
@@ -66,26 +68,15 @@ $(BOOT_BIN): $(BOOT_SRC) | $(BLDDIR)
 $(STAGE2_BIN): $(STAGE2_SRC) | $(BLDDIR)
 	$(NASM) -f bin $< -o $@
 
-$(ISR_OBJ): $(ISR_SRC) | $(BLDDIR)
+$(ISR_OBJ): $(ISR_ASM) | $(BLDDIR)
 	$(NASM) -f elf32 -w-label-orphan $< -o $@
 
-$(BLDDIR)/kernel/%.o: $(SRCDIR)/kernel/%.c | $(BLDDIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
+$(BLDDIR)/%.o: $(SRCDIR)/%.cpp | $(BLDDIR)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BLDDIR)/drivers/%.o: $(SRCDIR)/drivers/%.c | $(BLDDIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BLDDIR)/shell/%.o: $(SRCDIR)/shell/%.c | $(BLDDIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BLDDIR)/lib/%.o: $(SRCDIR)/lib/%.c | $(BLDDIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(BLDDIR)/fs/%.o: $(SRCDIR)/fs/%.c | $(BLDDIR)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-$(KERNEL_ELF): $(ISR_OBJ) $(C_OBJS) $(LINKER_SRC)
-	$(LD) $(LDFLAGS) -T $(LINKER_SRC) $(ISR_OBJ) $(C_OBJS) -o $@
+$(KERNEL_ELF): $(ISR_OBJ) $(CXX_OBJS) $(LINKER_SRC)
+	$(LD) $(LDFLAGS) -T $(LINKER_SRC) $(ISR_OBJ) $(CXX_OBJS) -o $@
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
@@ -100,7 +91,7 @@ $(IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) build_img.py
 	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN))B"
 
 $(BLDDIR):
-	mkdir -p $(BLDDIR) $(BLDDIR)/kernel $(BLDDIR)/drivers $(BLDDIR)/shell $(BLDDIR)/fs $(BLDDIR)/lib
+	mkdir -p $(BLDDIR)
 
 $(HELLO_BIN): $(USER_ASM) | $(BLDDIR)
 	$(NASM) -f bin $< -o $@

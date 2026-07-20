@@ -1,7 +1,8 @@
 #include "drivers/pic.h"
-#include "lib/ports.h"
 
-void pic_remap(void) {
+PicController pic;
+
+void PicController::remap() {
     outb(0x20, 0x11); outb(0xA0, 0x11);
     outb(0x21, 0x20); outb(0xA1, 0x28);
     outb(0x21, 0x04); outb(0xA1, 0x02);
@@ -9,7 +10,7 @@ void pic_remap(void) {
     outb(0x21, 0xFB); outb(0xA1, 0xFF);
 }
 
-void pic_unmask_irq(int irq) {
+void PicController::unmask_irq(int irq) {
     if (irq < 8) outb(0x21, inb(0x21) & ~(1 << irq));
     else         outb(0xA1, inb(0xA1) & ~(1 << (irq - 8)));
 }

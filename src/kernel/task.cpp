@@ -15,7 +15,7 @@ static void task_wrapper(void) {
 
 void task_init(void) {
     list_init(&ready_queue);
-    main_task = kmalloc(sizeof(struct task_struct));
+    main_task = (task_struct *)kmalloc(sizeof(struct task_struct));
     main_task->pid = 0;
     main_task->state = TASK_RUNNING;
     main_task->kernel_stack = 0;
@@ -23,10 +23,10 @@ void task_init(void) {
 }
 
 int task_create(void (*entry)(void *), void *arg) {
-    struct task_struct *t = kmalloc(sizeof(struct task_struct));
+    struct task_struct *t = (task_struct *)kmalloc(sizeof(struct task_struct));
     if (!t) return -1;
 
-    u32 *stack = kmalloc(4096);
+    u32 *stack = (u32 *)kmalloc(4096);
     if (!stack) { kfree(t); return -1; }
     for (int i = 0; i < 1024; i++) stack[i] = 0xCCCCCCCC;
 

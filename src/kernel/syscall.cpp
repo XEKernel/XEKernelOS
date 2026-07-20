@@ -9,7 +9,7 @@ static void sys_write(registers_t *r) {
     r->eax = len;
 }
 
-void syscall_handler(registers_t *r) {
+extern "C" void syscall_handler(registers_t *r) {
     switch (r->eax) {
     case SYS_WRITE:
         sys_write(r);

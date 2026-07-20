@@ -3,57 +3,58 @@
 #include "drivers/gfx.h"
 #include "lib/types.h"
 
-static u8 buf[512];
-static int start_sec, fat_secs, root_secs, data_sec;
-static u16 spc, bps;
-static u8  num_fat;
-static u16 root_ents;
-static u16 cur_dir_cluster;   /* 0 = root directory */
-static char cur_dir_name[13];  /* human-readable name of current dir */
+FatFilesystem fat;
 
-/* ---- forward declarations ---- */
-static int read_root_sec(int sector, u8 *dst);
-static int write_root_sec(int sector, u8 *src);
-static u16 next_cluster(u16 cl);
+/* ---- internal helpers ---- */
 
-/* ---- current directory helpers ---- */
-
-static int curdir_secs(void) {
-    if (cur_dir_cluster == 0)
-        return data_sec - root_secs;
-    int n = 0;
-    u16 cl = cur_dir_cluster;
-    while (cl >= 2 && cl < 0xFF0) { n += spc; cl = next_cluster(cl); }
-    return n;
+int FatFilesystem::read_root_sec(int sector, u8 *dst) {
+    return ata_read(root_secs_ + sector, 1, (u16 *)dst);
 }
 
-static int read_curdir(int sec_idx) {
-    if (cur_dir_cluster == 0)
-        return read_root_sec(sec_idx, buf);
-    u16 cl = cur_dir_cluster;
-    int per = spc;
-    while (sec_idx >= per) {
-        u16 nx = next_cluster(cl);
-        if (nx < 2 || nx >= 0xFF0) return -1;
-        cl = nx; sec_idx -= per;
-    }
-    return ata_read(data_sec + (cl - 2) * spc + sec_idx, 1, (u16 *)buf);
+int FatFilesystem::write_root_sec(int sector, u8 *src) {
+    return ata_write(root_secs_ + sector, 1, (u16 *)src);
 }
 
-static int write_curdir(int sec_idx) {
-    if (cur_dir_cluster == 0)
-        return write_root_sec(sec_idx, buf);
-    u16 cl = cur_dir_cluster;
-    int per = spc;
-    while (sec_idx >= per) {
-        u16 nx = next_cluster(cl);
-        if (nx < 2 || nx >= 0xFF0) return -1;
-        cl = nx; sec_idx -= per;
-    }
-    return ata_write(data_sec + (cl - 2) * spc + sec_idx, 1, (u16 *)buf);
+u16 FatFilesystem::next_cluster(u16 cl) {
+    u32 off = cl + (cl / 2);
+    u32 fat_sec = off / 512;
+    u32 fat_pos = off % 512;
+    u8 fbuf[512];
+    ata_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    u16 val = *(u16 *)(fbuf + fat_pos);
+    if (cl & 1) return val >> 4;
+    return val & 0xFFF;
 }
 
-static void name83_to_str(u8 *e, char *name) {
+u16 FatFilesystem::read_fat_entry(u16 cl) {
+    u32 off = cl + (cl / 2);
+    u32 fat_sec = off / 512;
+    u32 fat_pos = off % 512;
+    u8 fbuf[512];
+    ata_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    u16 val = *(u16 *)(fbuf + fat_pos);
+    if (cl & 1) return val >> 4;
+    return val & 0xFFF;
+}
+
+void FatFilesystem::write_fat_entry(u16 cl, u16 value) {
+    u32 off = cl + (cl / 2);
+    u32 fat_sec = off / 512;
+    u32 fat_pos = off % 512;
+    u8 fbuf[512];
+    ata_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    u16 val = *(u16 *)(fbuf + fat_pos);
+    if (cl & 1)
+        val = (val & 0x000F) | ((value & 0xFFF) << 4);
+    else
+        val = (val & 0xF000) | (value & 0xFFF);
+    *(u16 *)(fbuf + fat_pos) = val;
+    ata_write(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    for (int i = 1; i < num_fat_; i++)
+        ata_write(start_sec_ + i * fat_secs_ + fat_sec, 1, (u16 *)fbuf);
+}
+
+void FatFilesystem::name83_to_str(u8 *e, char *name) {
     int n = 0;
     for (int k = 0; k < 8 && e[k] != ' '; k++) name[n++] = e[k];
     name[n++] = '.';
@@ -62,7 +63,7 @@ static void name83_to_str(u8 *e, char *name) {
     name[n] = 0;
 }
 
-static void str_to_name83(const char *name, u8 *fname) {
+void FatFilesystem::str_to_name83(const char *name, u8 *fname) {
     for (int i = 0; i < 11; i++) fname[i] = ' ';
     int si = 0, di = 0;
     while (name[si] && name[si] != '.' && di < 8) {
@@ -80,88 +81,78 @@ static void str_to_name83(const char *name, u8 *fname) {
     }
 }
 
-static int read_root_sec(int sector, u8 *dst) {
-    return ata_read(root_secs + sector, 1, (u16 *)dst);
+int FatFilesystem::curdir_secs() {
+    if (cur_dir_cluster_ == 0)
+        return data_sec_ - root_secs_;
+    int n = 0;
+    u16 cl = cur_dir_cluster_;
+    while (cl >= 2 && cl < 0xFF0) { n += spc_; cl = next_cluster(cl); }
+    return n;
 }
 
-static int write_root_sec(int sector, u8 *src) {
-    return ata_write(root_secs + sector, 1, (u16 *)src);
+int FatFilesystem::read_curdir(int sec_idx) {
+    if (cur_dir_cluster_ == 0)
+        return read_root_sec(sec_idx, buf_);
+    u16 cl = cur_dir_cluster_;
+    int per = spc_;
+    while (sec_idx >= per) {
+        u16 nx = next_cluster(cl);
+        if (nx < 2 || nx >= 0xFF0) return -1;
+        cl = nx; sec_idx -= per;
+    }
+    return ata_read(data_sec_ + (cl - 2) * spc_ + sec_idx, 1, (u16 *)buf_);
 }
 
-static u16 next_cluster(u16 cl) {
-    u32 off = cl + (cl / 2);
-    u32 fat_sec = off / 512;
-    u32 fat_pos = off % 512;
-    u8 fbuf[512];
-    ata_read(start_sec + fat_sec, 1, (u16 *)fbuf);
-    u16 val = *(u16 *)(fbuf + fat_pos);
-    if (cl & 1) return val >> 4;
-    return val & 0xFFF;
+int FatFilesystem::write_curdir(int sec_idx) {
+    if (cur_dir_cluster_ == 0)
+        return write_root_sec(sec_idx, buf_);
+    u16 cl = cur_dir_cluster_;
+    int per = spc_;
+    while (sec_idx >= per) {
+        u16 nx = next_cluster(cl);
+        if (nx < 2 || nx >= 0xFF0) return -1;
+        cl = nx; sec_idx -= per;
+    }
+    return ata_write(data_sec_ + (cl - 2) * spc_ + sec_idx, 1, (u16 *)buf_);
 }
 
-static u16 read_fat_entry(u16 cl) {
-    u32 off = cl + (cl / 2);
-    u32 fat_sec = off / 512;
-    u32 fat_pos = off % 512;
-    u8 fbuf[512];
-    ata_read(start_sec + fat_sec, 1, (u16 *)fbuf);
-    u16 val = *(u16 *)(fbuf + fat_pos);
-    if (cl & 1) return val >> 4;
-    return val & 0xFFF;
-}
+/* ---- public API ---- */
 
-static void write_fat_entry(u16 cl, u16 value) {
-    u32 off = cl + (cl / 2);
-    u32 fat_sec = off / 512;
-    u32 fat_pos = off % 512;
-    u8 fbuf[512];
-    ata_read(start_sec + fat_sec, 1, (u16 *)fbuf);
-    u16 val = *(u16 *)(fbuf + fat_pos);
-    if (cl & 1)
-        val = (val & 0x000F) | ((value & 0xFFF) << 4);
-    else
-        val = (val & 0xF000) | (value & 0xFFF);
-    *(u16 *)(fbuf + fat_pos) = val;
-    ata_write(start_sec + fat_sec, 1, (u16 *)fbuf);
-    for (int i = 1; i < num_fat; i++)
-        ata_write(start_sec + i * fat_secs + fat_sec, 1, (u16 *)fbuf);
-}
-
-int fat_init(void) {
-    int r = ata_read(0, 1, (u16 *)buf);
+int FatFilesystem::init() {
+    int r = ata_read(0, 1, (u16 *)buf_);
     if (r) return -1;
-    bps = *(u16 *)(buf + 11);
-    spc = buf[13];
-    u16 reserved = *(u16 *)(buf + 14);
-    num_fat = buf[16];
-    root_ents = *(u16 *)(buf + 17);
-    u16 fat_size  = *(u16 *)(buf + 22);
-    start_sec = reserved;
-    fat_secs  = fat_size;
-    root_secs = reserved + num_fat * fat_size;
-    data_sec  = root_secs + (root_ents * 32 + bps - 1) / bps;
+    bps_ = *(u16 *)(buf_ + 11);
+    spc_ = buf_[13];
+    u16 reserved = *(u16 *)(buf_ + 14);
+    num_fat_ = buf_[16];
+    root_ents_ = *(u16 *)(buf_ + 17);
+    u16 fat_size  = *(u16 *)(buf_ + 22);
+    start_sec_ = reserved;
+    fat_secs_  = fat_size;
+    root_secs_ = reserved + num_fat_ * fat_size;
+    data_sec_  = root_secs_ + (root_ents_ * 32 + bps_ - 1) / bps_;
     return 0;
 }
 
-u16 fat_find_free_cluster(void) {
-    u16 max_cluster = (fat_secs * 512 * 2) / 3;
+u16 FatFilesystem::find_free_cluster() {
+    u16 max_cluster = (fat_secs_ * 512 * 2) / 3;
     for (u16 cl = 2; cl < max_cluster; cl++)
         if (read_fat_entry(cl) == 0) return cl;
     return 0;
 }
 
-u16 fat_alloc_cluster(void) {
-    u16 cl = fat_find_free_cluster();
+u16 FatFilesystem::alloc_cluster() {
+    u16 cl = find_free_cluster();
     if (!cl) return 0;
     write_fat_entry(cl, 0xFFF);
     return cl;
 }
 
-void fat_set_cluster(u16 cluster, u16 value) {
+void FatFilesystem::set_cluster(u16 cluster, u16 value) {
     write_fat_entry(cluster, value);
 }
 
-int fat_read_file_buf(const char *name, u8 *out, u32 max_len) {
+int FatFilesystem::read_file(const char *name, u8 *out, u32 max_len) {
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -169,11 +160,11 @@ int fat_read_file_buf(const char *name, u8 *out, u32 max_len) {
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
-            if (e[11] & 0x10) continue;  /* skip directories */
+            if (e[11] & 0x10) continue;
             int match = 1;
             for (int k = 0; k < 11; k++) if (e[k] != fname[k]) { match = 0; break; }
             if (!match) continue;
@@ -183,9 +174,9 @@ int fat_read_file_buf(const char *name, u8 *out, u32 max_len) {
             u32 remain = (size < max_len) ? size : max_len;
             u32 offset = 0;
             while (cl >= 2 && cl < 0xFF0 && remain) {
-                u32 chunk = spc * bps;
+                u32 chunk = spc_ * bps_;
                 if (chunk > remain) chunk = remain;
-                ata_read(data_sec + (cl - 2) * spc, (chunk + bps - 1) / bps, (u16 *)(out + offset));
+                ata_read(data_sec_ + (cl - 2) * spc_, (chunk + bps_ - 1) / bps_, (u16 *)(out + offset));
                 offset += chunk;
                 remain -= chunk;
                 cl = next_cluster(cl);
@@ -196,7 +187,7 @@ int fat_read_file_buf(const char *name, u8 *out, u32 max_len) {
     return -1;
 }
 
-int fat_write_file(const char *name, const u8 *data, u32 size) {
+int FatFilesystem::write_file(const char *name, const u8 *data, u32 size) {
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -207,7 +198,7 @@ int fat_write_file(const char *name, const u8 *data, u32 size) {
     for (int s = 0; s < maxs && !found; s++) {
         if (read_curdir(s)) return -3;
         for (int j = 0; j < 512 && !found; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (free_entry < 0 && (e[0] == 0xE5 || e[0] == 0)) free_entry = s * 512 + j;
             if (e[0] == 0) { found = 1; break; }
             if (e[0] == 0xE5) continue;
@@ -229,10 +220,10 @@ int fat_write_file(const char *name, const u8 *data, u32 size) {
 
     if (free_entry < 0) return -4;
 
-    u32 needed_clusters = (size + spc * bps - 1) / (spc * bps);
+    u32 needed_clusters = (size + spc_ * bps_ - 1) / (spc_ * bps_);
     u16 first_cl = 0, prev_cl = 0;
     for (u32 i = 0; i < needed_clusters; i++) {
-        u16 cl = fat_alloc_cluster();
+        u16 cl = alloc_cluster();
         if (!cl) return -5;
         if (!first_cl) first_cl = cl;
         if (prev_cl) write_fat_entry(prev_cl, cl);
@@ -242,11 +233,11 @@ int fat_write_file(const char *name, const u8 *data, u32 size) {
     u32 written = 0;
     u16 cl = first_cl;
     while (cl >= 2 && cl < 0xFF0 && written < size) {
-        u32 chunk = spc * bps;
+        u32 chunk = spc_ * bps_;
         if (chunk > size - written) chunk = size - written;
-        u32 sec_count = (chunk + bps - 1) / bps;
+        u32 sec_count = (chunk + bps_ - 1) / bps_;
         if (sec_count > 0)
-            ata_write(data_sec + (cl - 2) * spc, sec_count, (u16 *)(data + written));
+            ata_write(data_sec_ + (cl - 2) * spc_, sec_count, (u16 *)(data + written));
         written += chunk;
         cl = next_cluster(cl);
     }
@@ -254,7 +245,7 @@ int fat_write_file(const char *name, const u8 *data, u32 size) {
     int sec_idx = free_entry / 512;
     int entry_off = free_entry % 512;
     if (read_curdir(sec_idx)) return -3;
-    u8 *entry = buf + entry_off;
+    u8 *entry = buf_ + entry_off;
     for (int k = 0; k < 11; k++) entry[k] = fname[k];
     entry[11] = 0x20;
     *(u16 *)(entry + 26) = first_cl;
@@ -263,7 +254,7 @@ int fat_write_file(const char *name, const u8 *data, u32 size) {
     return 0;
 }
 
-int fat_delete_file(const char *name) {
+int FatFilesystem::delete_file(const char *name) {
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -271,7 +262,7 @@ int fat_delete_file(const char *name) {
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) return -1;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
@@ -293,12 +284,12 @@ int fat_delete_file(const char *name) {
     return -1;
 }
 
-int fat_dir(void) {
+int FatFilesystem::dir() {
     int maxs = curdir_secs();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) return 0;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
@@ -327,40 +318,35 @@ int fat_dir(void) {
     return 0;
 }
 
-int fat_cd(const char *name) {
-    /* cd \  →  root */
+int FatFilesystem::cd(const char *name) {
     if (*name == '\\' && name[1] == 0) {
-        cur_dir_cluster = 0;
-        cur_dir_name[0] = 0;
+        cur_dir_cluster_ = 0;
+        cur_dir_name_[0] = 0;
         return 0;
     }
     while (*name == ' ') name++;
     if (!*name) return -1;
 
-    /* cd ..  →  parent */
     if (name[0] == '.' && name[1] == '.' && name[2] == 0) {
-        if (cur_dir_cluster == 0) return 0;  /* already root */
-        /* read ".." entry from first sector of current dir */
+        if (cur_dir_cluster_ == 0) return 0;
         if (read_curdir(0)) return -1;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) break;
             if (e[0] == 0xE5) continue;
             if (!(e[11] & 0x10)) continue;
             if (e[0] == '.' && e[1] == '.' && e[2] == ' ') {
-                cur_dir_cluster = *(u16 *)(e + 26);
-                cur_dir_name[0] = cur_dir_cluster ? '?' : 0;
-                cur_dir_name[1] = 0;
+                cur_dir_cluster_ = *(u16 *)(e + 26);
+                cur_dir_name_[0] = cur_dir_cluster_ ? '?' : 0;
+                cur_dir_name_[1] = 0;
                 return 0;
             }
         }
         return -1;
     }
 
-    /* cd .  →  no-op */
     if (name[0] == '.' && name[1] == 0) return 0;
 
-    /* cd <dirname>  →  enter subdirectory */
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -368,7 +354,7 @@ int fat_cd(const char *name) {
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
@@ -377,39 +363,34 @@ int fat_cd(const char *name) {
             for (int k = 0; k < 11; k++)
                 if (e[k] != fname[k]) { match = 0; break; }
             if (!match) continue;
-            cur_dir_cluster = *(u16 *)(e + 26);
-            /* store human-readable name */
-            name83_to_str(e, cur_dir_name);
+            cur_dir_cluster_ = *(u16 *)(e + 26);
+            name83_to_str(e, cur_dir_name_);
             return 0;
         }
     }
     return -1;
 }
 
-int fat_mkdir(const char *name) {
-    u16 cl = fat_alloc_cluster();
+int FatFilesystem::mkdir(const char *name) {
+    u16 cl = alloc_cluster();
     if (!cl) return -2;
 
-    /* Build "." and ".." entries in new cluster */
     u8 db[512];
     for (int i = 0; i < 512; i++) db[i] = 0;
 
-    /* "." entry */
     for (int i = 0; i < 11; i++) db[i] = ' ';
     db[0] = '.';
     db[11] = 0x10;
     *(u16 *)(db + 26) = cl;
 
-    /* ".." entry */
     u8 *dd = db + 32;
     for (int i = 0; i < 11; i++) dd[i] = ' ';
     dd[0] = '.'; dd[1] = '.';
     dd[11] = 0x10;
-    *(u16 *)(dd + 26) = cur_dir_cluster;
+    *(u16 *)(dd + 26) = cur_dir_cluster_;
 
-    ata_write(data_sec + (cl - 2) * spc, 1, (u16 *)db);
+    ata_write(data_sec_ + (cl - 2) * spc_, 1, (u16 *)db);
 
-    /* Create directory entry in current directory */
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -417,7 +398,7 @@ int fat_mkdir(const char *name) {
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] != 0 && e[0] != 0xE5) continue;
             for (int i = 0; i < 11; i++) e[i] = fname[i];
             e[11] = 0x10;
@@ -430,7 +411,7 @@ int fat_mkdir(const char *name) {
     return -1;
 }
 
-int fat_cat(const char *name) {
+int FatFilesystem::cat(const char *name) {
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -438,7 +419,7 @@ int fat_cat(const char *name) {
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
@@ -452,8 +433,8 @@ int fat_cat(const char *name) {
             u8 dbuf[512];
             u32 remain = size;
             while (cl >= 2 && cl < 0xFF0 && remain) {
-                ata_read(data_sec + (cl - 2) * spc, 1, (u16 *)dbuf);
-                u32 chunk = spc * bps;
+                ata_read(data_sec_ + (cl - 2) * spc_, 1, (u16 *)dbuf);
+                u32 chunk = spc_ * bps_;
                 if (chunk > remain) chunk = remain;
                 for (u32 k = 0; k < chunk; k++) gfx_putc(dbuf[k]);
                 remain -= chunk;
@@ -465,20 +446,20 @@ int fat_cat(const char *name) {
     return -1;
 }
 
-void fat_cwd_str(char *out, int max) {
+void FatFilesystem::cwd_str(char *out, int max) {
     if (max < 2) return;
-    if (cur_dir_cluster == 0 || cur_dir_name[0] == 0) {
+    if (cur_dir_cluster_ == 0 || cur_dir_name_[0] == 0) {
         out[0] = '\\'; out[1] = 0;
         return;
     }
     int n = 0;
     out[n++] = '\\';
-    for (int i = 0; cur_dir_name[i] && n < max - 1; i++)
-        out[n++] = cur_dir_name[i];
+    for (int i = 0; cur_dir_name_[i] && n < max - 1; i++)
+        out[n++] = cur_dir_name_[i];
     out[n] = 0;
 }
 
-int fat_rmdir(const char *name) {
+int FatFilesystem::rmdir(const char *name) {
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -486,7 +467,7 @@ int fat_rmdir(const char *name) {
     for (int ss = 0; ss < maxs; ss++) {
         if (read_curdir(ss)) break;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
@@ -496,16 +477,14 @@ int fat_rmdir(const char *name) {
                 if (e[k] != fname[k]) { match = 0; break; }
             if (!match) continue;
 
-            /* Found the directory. Check it's empty. */
             u16 dir_cl = *(u16 *)(e + 26);
             u8 check[512];
-            ata_read(data_sec + (dir_cl - 2) * spc, 1, (u16 *)check);
+            ata_read(data_sec_ + (dir_cl - 2) * spc_, 1, (u16 *)check);
             for (int k = 64; k < 512; k += 32) {
-                if (check[k] != 0 && check[k] != 0xE5) return -2;  /* not empty */
+                if (check[k] != 0 && check[k] != 0xE5) return -2;
                 if (check[k] == 0) break;
             }
 
-            /* Free cluster chain */
             u16 cl = dir_cl;
             while (cl >= 2 && cl < 0xFF0) {
                 u16 next = next_cluster(cl);
@@ -513,7 +492,6 @@ int fat_rmdir(const char *name) {
                 cl = next;
             }
 
-            /* Mark entry as deleted */
             e[0] = 0xE5;
             write_curdir(ss);
             return 0;
@@ -522,7 +500,7 @@ int fat_rmdir(const char *name) {
     return -1;
 }
 
-int fat_rename(const char *old_name, const char *new_name) {
+int FatFilesystem::rename(const char *old_name, const char *new_name) {
     u8 old83[11], new83[11];
     str_to_name83(old_name, old83);
     str_to_name83(new_name, new83);
@@ -531,7 +509,7 @@ int fat_rename(const char *old_name, const char *new_name) {
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
-            u8 *e = buf + j;
+            u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
@@ -540,7 +518,6 @@ int fat_rename(const char *old_name, const char *new_name) {
                 if (e[k] != old83[k]) { match = 0; break; }
             if (!match) continue;
 
-            /* Rename entry in-place */
             for (int k = 0; k < 11; k++) e[k] = new83[k];
             write_curdir(s);
             return 0;

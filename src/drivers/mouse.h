@@ -1,5 +1,23 @@
 #pragma once
 #include "lib/types.h"
 
-void mouse_init(void);
-int  mouse_get(int *x, int *y, int *btn);
+class Mouse {
+public:
+    void init();
+    int  get(int *x, int *y, int *btn);
+
+private:
+    int  mx_ = 0, my_ = 0, mbtn_ = 0;
+    int  cycle_ = 0;
+    u8   pkt_[3]{};
+
+    static void wait(u8 write_mode);
+    static void write(u8 data);
+    static u8   read();
+    static void irq_handler();
+};
+
+extern Mouse mouse;
+
+inline void mouse_init()                { mouse.init(); }
+inline int  mouse_get(int *x, int *y, int *b) { return mouse.get(x, y, b); }

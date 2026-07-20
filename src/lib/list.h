@@ -12,21 +12,21 @@ static inline void list_init(struct list_head *list) {
     list->prev = list;
 }
 
-static inline void __list_add(struct list_head *new,
+static inline void __list_add(struct list_head *node,
                               struct list_head *prev,
                               struct list_head *next) {
-    next->prev = new;
-    new->next = next;
-    new->prev = prev;
-    prev->next = new;
+    next->prev = node;
+    node->next = next;
+    node->prev = prev;
+    prev->next = node;
 }
 
-static inline void list_add(struct list_head *new, struct list_head *head) {
-    __list_add(new, head, head->next);
+static inline void list_add(struct list_head *node, struct list_head *head) {
+    __list_add(node, head, head->next);
 }
 
-static inline void list_add_tail(struct list_head *new, struct list_head *head) {
-    __list_add(new, head->prev, head);
+static inline void list_add_tail(struct list_head *node, struct list_head *head) {
+    __list_add(node, head->prev, head);
 }
 
 static inline void list_del(struct list_head *entry) {

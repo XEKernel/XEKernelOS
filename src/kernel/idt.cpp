@@ -1,7 +1,7 @@
 #include "kernel/idt.h"
 
-extern u32 isr_addrs[];
-extern void isr128(void);
+extern "C" u32 isr_addrs[];
+extern "C" void isr128(void);
 
 struct idt_entry {
     u16 offset_low;

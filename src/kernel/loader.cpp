@@ -8,7 +8,7 @@
 #define USER_LOAD_ADDR 0x400000
 
 int load_binary(const char *path) {
-    u8 *buf = kmalloc(65536);
+    u8 *buf = (u8 *)kmalloc(65536);
     if (!buf) { serial_write_str("loader: out of memory\n"); return -1; }
 
     int sz = fat_read_file_buf(path, buf, 65536);

@@ -6,18 +6,19 @@
 #include "shell/shell.h"
 #include "lib/ports.h"
 
-static void (*handlers[256])(void);
+IsrManager isr_mgr;
 
-void isr_register(int vec, void (*fn)(void)) {
-    if (vec >= 0 && vec < 256) handlers[vec] = fn;
+void IsrManager::register_handler(int vec, void (*fn)(void)) {
+    if (vec >= 0 && vec < 256) handlers_[vec] = fn;
 }
 
-void syscall_handler(registers_t *r);
+extern "C" void syscall_handler(registers_t *r);
 
-void c_isr_handler(registers_t *r) {
+extern "C" void c_isr_handler(registers_t *r) {
     int vec = r->vec;
 
-    if (handlers[vec]) handlers[vec]();
+    void (*h)(void) = isr_mgr.lookup(vec);
+    if (h) h();
 
     if (vec == 0x20) {
         if (kb_ctrl_c()) {

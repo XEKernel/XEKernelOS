@@ -1,34 +1,28 @@
 #include "drivers/keyboard.h"
 #include "drivers/gfx.h"
-#include "lib/ports.h"
 
-static const char kbd_low[] = {
+const char Keyboard::kbd_low_[] = {
     0,0,'1','2','3','4','5','6','7','8','9','0','-','=','\b','\t',
     'q','w','e','r','t','y','u','i','o','p','[',']','\n',0,'a','s',
     'd','f','g','h','j','k','l',';','\'','`',0,'\\','z','x','c','v',
     'b','n','m',',','.','/',0,'*',0,' ',0,0,0,0,0,0,
 };
 
-static const char kbd_up[] = {
+const char Keyboard::kbd_up_[] = {
     0,0,'!','@','#','$','%','^','&','*','(',')','_','+','\b','\t',
     'Q','W','E','R','T','Y','U','I','O','P','{','}','\n',0,'A','S',
     'D','F','G','H','J','K','L',':','"','~',0,'|','Z','X','C','V',
     'B','N','M','<','>','?',0,'*',0,' ',0,0,0,0,0,0,
 };
 
-#define SC_LSHIFT  0x2A
-#define SC_RSHIFT  0x36
-#define SC_CAPS    0x3A
+Keyboard kb;
 
-static volatile int shift_pressed;
-static volatile int caps_on;
-
-static void kb_cmd(u8 cmd) {
+void Keyboard::cmd(u8 cmd) {
     for (int i = 0; i < 10000; i++) if (!(inb(0x64) & 2)) break;
     outb(0x60, cmd);
 }
 
-static u8 kb_await(void) {
+u8 Keyboard::await() {
     for (int i = 0; i < 100000; i++) {
         u8 st = inb(KB_STATUS);
         if (st & 1) return inb(KB_DATA);
@@ -36,7 +30,7 @@ static u8 kb_await(void) {
     return 0;
 }
 
-void kb_init(void) {
+void Keyboard::init() {
     outb(0x64, 0xAE);
     for (int i = 0; i < 10000; i++) if (!(inb(0x64) & 2)) break;
     outb(0x64, 0x60);
@@ -44,14 +38,14 @@ void kb_init(void) {
     outb(0x60, 0x44);
     while (inb(KB_STATUS) & 1) inb(KB_DATA);
 
-    kb_cmd(0xF4);
-    kb_await();
+    cmd(0xF4);
+    await();
     while (inb(KB_STATUS) & 1) inb(KB_DATA);
-    shift_pressed = 0;
-    caps_on = 0;
+    shift_ = 0;
+    caps_  = 0;
 }
 
-static u8 kb_read_scan(void) {
+u8 Keyboard::read_scan() {
     for (;;) {
         u8 st = inb(KB_STATUS);
         if (st & 1) {
@@ -62,44 +56,42 @@ static u8 kb_read_scan(void) {
     }
 }
 
-char kb_getchar(void) {
+char Keyboard::getchar() {
     for (;;) {
-        u8 s = kb_read_scan();
-        if (s == SC_LSHIFT || s == SC_RSHIFT) { shift_pressed = 1; continue; }
-        if (s == (SC_LSHIFT | 0x80) || s == (SC_RSHIFT | 0x80)) { shift_pressed = 0; continue; }
-        if (s == SC_CAPS) { caps_on = !caps_on; continue; }
+        u8 s = read_scan();
+        if (s == SC_LSHIFT || s == SC_RSHIFT) { shift_ = 1; continue; }
+        if (s == (SC_LSHIFT | 0x80) || s == (SC_RSHIFT | 0x80)) { shift_ = 0; continue; }
+        if (s == SC_CAPS) { caps_ = !caps_; continue; }
         if (s & 0x80) continue;
-        if (s >= sizeof(kbd_low)) continue;
+        if (s >= (u8)sizeof(kbd_low_)) continue;
         if (s <= 1) continue;
-        int shifted = shift_pressed ^ caps_on;
-        char c = shifted ? kbd_up[s] : kbd_low[s];
+        int shifted = shift_ ^ caps_;
+        char c = shifted ? kbd_up_[s] : kbd_low_[s];
         if (c) return c;
     }
 }
 
-void kb_readline(char *b, int max) {
+void Keyboard::readline(char *b, int max) {
     int n = 0;
     for (;;) {
-        char c = kb_getchar();
-        if (c == '\n') { b[n] = 0; gfx_putc('\n'); return; }
-        if (c == '\b') { if (n) { n--; gfx_putc('\b'); } continue; }
-        if (c >= ' ' && c <= '~' && n < max-1) { b[n++] = c; gfx_putc(c); }
+        char c = getchar();
+        if (c == '\n') { b[n] = 0; gfx.putc('\n'); return; }
+        if (c == '\b') { if (n) { n--; gfx.putc('\b'); } continue; }
+        if (c >= ' ' && c <= '~' && n < max-1) { b[n++] = c; gfx.putc(c); }
     }
 }
 
-void kb_flush(void) {
+void Keyboard::flush() {
     while (inb(KB_STATUS) & 1) inb(KB_DATA);
 }
 
-static volatile int ctrl_held;
-
-int kb_ctrl_c(void) {
+int Keyboard::ctrl_c() {
     u8 st = inb(KB_STATUS);
     if (!(st & 1)) return 0;
     u8 data = inb(KB_DATA);
 
-    if (data == 0x1D)      { ctrl_held = 1; return 0; }
-    if (data == 0x9D)      { ctrl_held = 0; return 0; }
-    if (data == 0x2E && ctrl_held) return 1;
+    if (data == 0x1D)      { ctrl_ = 1; return 0; }
+    if (data == 0x9D)      { ctrl_ = 0; return 0; }
+    if (data == 0x2E && ctrl_) return 1;
     return 0;
 }

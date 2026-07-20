@@ -26,7 +26,7 @@ static void idle_task(void *arg) {
 }
 
 __attribute__((section(".text.init")))
-void kernel_main(void) {
+extern "C" void kernel_main(void) {
     __asm__("cli");
     kb_flush();
 
@@ -60,7 +60,7 @@ void kernel_main(void) {
     serial_write_char('\n');
 
     {
-        u32 *test = kmalloc(128);
+        u32 *test = (u32 *)kmalloc(128);
         if (test) {
             for (int i = 0; i < 32; i++) test[i] = i * 4;
             serial_write_str("heap test: ");

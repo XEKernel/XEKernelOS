@@ -1,0 +1,4 @@
+build/
+*.ppm
+.workbuddy/
+1.txt

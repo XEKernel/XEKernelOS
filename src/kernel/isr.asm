@@ -67,8 +67,7 @@ extern c_isr_handler
 
 common_isr:
     pusha
-    mov eax, [esp + 32]
-    push eax
+    push esp
     call c_isr_handler
     add esp, 4
     popa

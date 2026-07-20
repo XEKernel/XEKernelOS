@@ -30,3 +30,6 @@ SECTIONS {
         _bss_end = .;
     }
 }
+
+_heap_start = 0x01000000;
+_heap_end = 0x01F00000;

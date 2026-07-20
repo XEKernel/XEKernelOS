@@ -30,10 +30,12 @@ PIT_C    = $(SRCDIR)/drivers/pit.c
 MOUSE_C  = $(SRCDIR)/drivers/mouse.c
 ATA_C    = $(SRCDIR)/drivers/ata.c
 GFX_C    = $(SRCDIR)/drivers/gfx.c
+SERIAL_C = $(SRCDIR)/drivers/serial.c
 FAT_C    = $(SRCDIR)/fs/fat12.c
 SHELL_C  = $(SRCDIR)/shell/shell.c
+HEAP_C   = $(SRCDIR)/lib/heap.c
 
-C_SRCS   = $(KERN_C) $(ISR_C) $(IDT_C) $(MM_C) $(PAGING_C) $(USER_C) $(VGA_C) $(KB_C) $(PIC_C) $(PIT_C) $(MOUSE_C) $(ATA_C) $(GFX_C) $(FAT_C) $(SHELL_C)
+C_SRCS   = $(KERN_C) $(ISR_C) $(IDT_C) $(MM_C) $(PAGING_C) $(USER_C) $(VGA_C) $(KB_C) $(PIC_C) $(PIT_C) $(MOUSE_C) $(ATA_C) $(GFX_C) $(SERIAL_C) $(FAT_C) $(SHELL_C) $(HEAP_C)
 C_OBJS   = $(patsubst $(SRCDIR)/%.c,$(BLDDIR)/%.o,$(C_SRCS))
 
 BOOT_BIN   = $(BLDDIR)/boot.bin
@@ -69,6 +71,9 @@ $(BLDDIR)/drivers/%.o: $(SRCDIR)/drivers/%.c | $(BLDDIR)
 $(BLDDIR)/shell/%.o: $(SRCDIR)/shell/%.c | $(BLDDIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
+$(BLDDIR)/lib/%.o: $(SRCDIR)/lib/%.c | $(BLDDIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
 $(BLDDIR)/fs/%.o: $(SRCDIR)/fs/%.c | $(BLDDIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
@@ -88,7 +93,7 @@ $(IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) build_img.py
 	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN))B"
 
 $(BLDDIR):
-	mkdir -p $(BLDDIR) $(BLDDIR)/kernel $(BLDDIR)/drivers $(BLDDIR)/shell $(BLDDIR)/fs
+	mkdir -p $(BLDDIR) $(BLDDIR)/kernel $(BLDDIR)/drivers $(BLDDIR)/shell $(BLDDIR)/fs $(BLDDIR)/lib
 
 run: $(IMG)
 	qemu-system-i386 -fda $< -hda $(BLDDIR)/disk.img -m 32

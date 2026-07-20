@@ -96,6 +96,71 @@ real_start:
     int 0x13
     jc _err
 
+; load kernel part5 (LBA 63-64, 2 sectors) to 0x25C00
+    mov ah, 0x02
+    mov al, 2
+    mov ch, 1
+    mov cl, 10
+    mov dh, 1
+    mov dl, 0x00
+    push 0x2000
+    pop es
+    mov bx, 0x5C00
+    int 0x13
+    jc _err
+
+; load kernel part6 (LBA 65-69, 5 sectors) to 0x26000
+    mov ah, 0x02
+    mov al, 5
+    mov ch, 1
+    mov cl, 12
+    mov dh, 1
+    mov dl, 0x00
+    push 0x2000
+    pop es
+    mov bx, 0x6000
+    int 0x13
+    jc _err
+
+; load kernel part7 (LBA 70-74, 5 sectors) to 0x26A00
+    mov ah, 0x02
+    mov al, 5
+    mov ch, 1
+    mov cl, 17
+    mov dh, 1
+    mov dl, 0x00
+    push 0x2000
+    pop es
+    mov bx, 0x6A00
+    int 0x13
+    jc _err
+
+; load kernel part8 (LBA 75-85, 11 sectors) to 0x27400
+    mov ah, 0x02
+    mov al, 11
+    mov ch, 2
+    mov cl, 4
+    mov dh, 0
+    mov dl, 0x00
+    push 0x2000
+    pop es
+    mov bx, 0x7400
+    int 0x13
+    jc _err
+
+; load kernel part9 (LBA 86, 1 sector) to 0x28A00
+    mov ah, 0x02
+    mov al, 1
+    mov ch, 2
+    mov cl, 15
+    mov dh, 0
+    mov dl, 0x00
+    push 0x2000
+    pop es
+    mov bx, 0x8A00
+    int 0x13
+    jc _err
+
 ; jump to stage2
     jmp 0x1000:0x0000
 

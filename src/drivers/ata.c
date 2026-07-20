@@ -71,7 +71,7 @@ int ata_write(u32 lba, u8 count, const u16 *buf) {
         if (ata_wait(ATA_SR_DRQ, ATA_SR_DRQ)) return -2;
 
         for (int i = 0; i < 256; i++)
-            outb(ATA_DATA, buf[s * 256 + i]);
+            outw(ATA_DATA, buf[s * 256 + i]);
     }
     return 0;
 }

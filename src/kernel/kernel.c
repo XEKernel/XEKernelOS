@@ -98,12 +98,28 @@ void kernel_main(void) {
 #endif
 
     gfx_clear(0x00);
-    gfx_puts("XEKernelOS v0.2.0 | x86 Protected Mode\n");
+
+    /* ---- HEADER ---- */
+    gfx_set_fg(COLOR_LCYAN);
+    gfx_puts_utf8("XEKernelOS v0.2.0 | x86 保护模式\n");
+    gfx_set_fg(COLOR_DGRAY);
     gfx_puts("----------------------------------------\n");
 
-    gfx_puts("[OK] PIC remapped (0x20/0x28)\n");
-    gfx_puts("[OK] IDT + ISR dispatcher\n");
-    gfx_puts("[OK] PIT 100Hz | Keyboard IRQ | Mouse IRQ\n");
+    /* ---- STATUS ---- */
+    gfx_set_fg(COLOR_LGREEN);
+    gfx_puts("[OK] ");
+    gfx_set_fg(COLOR_LGRAY);
+    gfx_puts_utf8("PIC 重映射 (0x20/0x28)\n");
+
+    gfx_set_fg(COLOR_LGREEN);
+    gfx_puts("[OK] ");
+    gfx_set_fg(COLOR_LGRAY);
+    gfx_puts_utf8("IDT + ISR 分发器\n");
+
+    gfx_set_fg(COLOR_LGREEN);
+    gfx_puts("[OK] ");
+    gfx_set_fg(COLOR_LGRAY);
+    gfx_puts_utf8("PIT 100Hz | 键盘中断 | 鼠标中断\n");
 
     u32 free = mm_free_count();
     char s[16];
@@ -112,7 +128,10 @@ void kernel_main(void) {
     else { while (t) { s[n++] = '0' + (t % 10); t /= 10; } }
     for (int i = 0; i < n/2; i++) { char c = s[i]; s[i] = s[n-1-i]; s[n-1-i] = c; }
     s[n] = 0;
-    gfx_puts("[OK] MM  init: "); gfx_puts(s); gfx_puts(" pages\n");
+    gfx_set_fg(COLOR_LGREEN);
+    gfx_puts("[OK] ");
+    gfx_set_fg(COLOR_LGRAY);
+    gfx_puts_utf8("内存初始化: "); gfx_puts(s); gfx_puts_utf8(" 页\n");
 
     u16 ident[256];
     int r = ata_identify(ident);
@@ -125,19 +144,35 @@ void kernel_main(void) {
         }
         model[40] = 0;
         for (int i = 39; i > 0 && model[i] == ' '; i--) model[i] = 0;
-        gfx_puts("[OK] ATA: "); gfx_puts(model); gfx_putc('\n');
+        gfx_set_fg(COLOR_LGREEN);
+        gfx_puts("[OK] ");
+        gfx_set_fg(COLOR_LGRAY);
+        gfx_puts("ATA: "); gfx_puts(model); gfx_putc('\n');
     } else {
-        gfx_puts("[--] ATA: no drive\n");
+        gfx_set_fg(COLOR_DGRAY);
+        gfx_puts("[--] ");
+        gfx_set_fg(COLOR_LGRAY);
+        gfx_puts_utf8("ATA: 无磁盘\n");
     }
 
+    gfx_set_fg(COLOR_DGRAY);
     gfx_puts("----------------------------------------\n");
     serial_write_str("=== Shell started ===\n");
 
     serial_write_str("fat_init calling...\n");
     int f = fat_init();
     serial_write_str("fat_init done\n");
-    if (f == 0) gfx_puts("[OK] FAT12 filesystem ready\n");
-    else        gfx_puts("[--] FAT12: no filesystem\n");
+    if (f == 0) {
+        gfx_set_fg(COLOR_LGREEN);
+        gfx_puts("[OK] ");
+        gfx_set_fg(COLOR_LGRAY);
+        gfx_puts_utf8("FAT12 文件系统就绪\n");
+    } else {
+        gfx_set_fg(COLOR_DGRAY);
+        gfx_puts("[--] ");
+        gfx_set_fg(COLOR_LGRAY);
+        gfx_puts_utf8("FAT12: 无文件系统\n");
+    }
 
     task_init();
     serial_write_str("tasks ready\n");

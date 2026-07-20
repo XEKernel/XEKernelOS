@@ -39,62 +39,73 @@ static u32 parse_hex(const char *s) {
 static char hex_buf[512];
 
 static void hex_dump(u32 lba, const u8 *data) {
+    gfx_set_fg(COLOR_YELLOW);
     gfx_puts("LBA "); gfx_put_hex_u32(lba); gfx_puts(":\n");
     for (int row = 0; row < 32; row++) {
+        gfx_set_fg(COLOR_DGRAY);
         gfx_put_hex_byte((row * 16) >> 8);
         gfx_put_hex_byte((row * 16) & 0xFF);
         gfx_puts(": ");
+        gfx_set_fg(COLOR_WHITE);
         for (int col = 0; col < 16; col++) {
             gfx_put_hex_byte(data[row * 16 + col]);
             gfx_putc(' ');
             if (col == 7) gfx_putc(' ');
         }
         gfx_putc(' ');
+        gfx_set_fg(COLOR_LGRAY);
         for (int col = 0; col < 16; col++) {
             char c = data[row * 16 + col];
             gfx_putc((c >= 32 && c < 127) ? c : '.');
         }
         gfx_putc('\n');
     }
+    gfx_set_fg(COLOR_LGRAY);
 }
 
 static void cmd_help(void) {
-    gfx_puts("Available commands:\n");
-    gfx_puts("  HELP     - Show this help\n");
-    gfx_puts("  CLEAR    - Clear screen\n");
-    gfx_puts("  INFO     - System info\n");
-    gfx_puts("  MEM      - Memory stats\n");
-    gfx_puts("  DISK ID  - Identify ATA drive\n");
-    gfx_puts("  DISK R <lba>  - Hex dump sector\n");
-    gfx_puts("  DISK W <lba> <hex> - Write byte\n");
-    gfx_puts("  LS       - List FAT12 files\n");
-    gfx_puts("  CAT <f>  - Display file\n");
-    gfx_puts("  CD <dir> - Change directory\n");
-    gfx_puts("  DIR      - List current directory\n");
-    gfx_puts("  MKDIR <n>- Create directory\n");
-    gfx_puts("  MOUSE    - Show mouse pos\n");
-    gfx_puts("  RUN <f>  - Load and run binary\n");
-    gfx_puts("  CREATE <f> <c> - Create file\n");
-    gfx_puts("  RM <f>   - Delete file\n");
-    gfx_puts("  ECHO <t> - Print text\n");
-    gfx_puts("  REBOOT   - Restart\n");
-    gfx_puts("  SHUTDOWN - Halt CPU\n");
+    gfx_set_fg(COLOR_LCYAN);
+    gfx_puts_utf8("可用命令:\n");
+    gfx_set_fg(COLOR_LGRAY);
+    gfx_puts_utf8("  HELP        帮助\n");
+    gfx_puts_utf8("  CLEAR       清屏\n");
+    gfx_puts_utf8("  INFO        系统信息\n");
+    gfx_puts_utf8("  MEM         内存统计\n");
+    gfx_puts_utf8("  DISK ID     磁盘识别\n");
+    gfx_puts_utf8("  DISK R      读扇区\n");
+    gfx_puts_utf8("  DISK W      写字节\n");
+    gfx_puts_utf8("  LS          列出文件\n");
+    gfx_puts_utf8("  CAT         查看文件\n");
+    gfx_puts_utf8("  CD          切换目录\n");
+    gfx_puts_utf8("  MKDIR       创建目录\n");
+    gfx_puts_utf8("  RMDIR       删除目录\n");
+    gfx_puts_utf8("  CP          复制文件\n");
+    gfx_puts_utf8("  MV          重命名\n");
+    gfx_puts_utf8("  RM          删除文件\n");
+    gfx_puts_utf8("  CREATE      创建文件\n");
+    gfx_puts_utf8("  MOUSE       鼠标坐标\n");
+    gfx_puts_utf8("  RUN         运行程序\n");
+    gfx_puts_utf8("  ECHO        回显\n");
+    gfx_puts_utf8("  REBOOT      重启\n");
+    gfx_puts_utf8("  SHUTDOWN    关机\n");
 }
 
 static void cmd_info(void) {
-    gfx_puts("XEKernelOS v0.2.0 - XEKernel\n");
-    gfx_puts("Architecture: x86 32-bit Protected Mode\n");
-    gfx_puts("Boot: MBR -> Stage2(asm) -> Kernel(C)\n");
-    gfx_puts("Paging: 4KB pages, identity mapping\n");
-    gfx_puts("FS: FAT12 | Timer: PIT 100Hz\n");
-    gfx_puts("Input: Keyboard IRQ + PS/2 Mouse\n");
-    gfx_puts("Security: Ring 3 user mode + TSS\n");
+    gfx_set_fg(COLOR_LCYAN);
+    gfx_puts_utf8("XEKernelOS v0.2.0 - XEKernel\n");
+    gfx_set_fg(COLOR_LGRAY);
+    gfx_puts_utf8("架构: x86 32 位保护模式\n");
+    gfx_puts_utf8("启动: MBR -> Stage2 -> 内核\n");
+    gfx_puts_utf8("分页: 4KB 页 标识映射\n");
+    gfx_puts_utf8("文件系统: FAT12 | 定时器: PIT 100Hz\n");
+    gfx_puts_utf8("输入: 键盘中断 + PS/2 鼠标\n");
+    gfx_puts_utf8("安全: Ring 3 + TSS\n");
 }
 
 static void cmd_mem(void) {
     char s[32];
     u32 total = mm_free_count();
-    gfx_puts("Free pages: ");
+    gfx_puts_utf8("空闲页: ");
     int n = 0, t = total;
     if (t == 0) { s[0] = '0'; n = 1; }
     else { while (t) { s[n++] = '0' + (t % 10); t /= 10; } }
@@ -106,10 +117,10 @@ static void cmd_mem(void) {
 static void cmd_disk_id(void) {
     u16 ident[256];
     int r = ata_identify(ident);
-    if (r == -1)      { gfx_puts("No ATA drive found.\n"); return; }
-    if (r == -2)      { gfx_puts("ATA drive busy/timeout.\n"); return; }
-    if (r == -3)      { gfx_puts("ATAPI device (not HDD).\n"); return; }
-    if (r == -4)      { gfx_puts("ATA IDENTIFY error.\n"); return; }
+    if (r == -1)      { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("ATA: 无磁盘。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (r == -2)      { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("ATA 设备忙。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (r == -3)      { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("ATAPI 设备（非硬盘）。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (r == -4)      { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("ATA 识别错误。\n"); gfx_set_fg(COLOR_LGRAY); return; }
 
     char model[41];
     for (int i = 0; i < 20; i++) {
@@ -131,15 +142,19 @@ static void cmd_disk_id(void) {
 
     u32 sectors = ((u32)ident[61] << 16) | ident[60];
 
-    gfx_puts("Model:    "); gfx_puts(model); gfx_putc('\n');
-    gfx_puts("Serial:   "); gfx_puts(sn);    gfx_putc('\n');
-    gfx_puts("Sectors:  "); gfx_put_hex_u32(sectors); gfx_putc('\n');
+    gfx_set_fg(COLOR_DGRAY); gfx_puts_utf8("型号:     ");
+    gfx_set_fg(COLOR_WHITE);  gfx_puts(model); gfx_putc('\n');
+    gfx_set_fg(COLOR_DGRAY); gfx_puts_utf8("序列号:   ");
+    gfx_set_fg(COLOR_WHITE);  gfx_puts(sn);    gfx_putc('\n');
+    gfx_set_fg(COLOR_DGRAY); gfx_puts_utf8("扇区数:   ");
+    gfx_set_fg(COLOR_YELLOW); gfx_put_hex_u32(sectors); gfx_putc('\n');
+    gfx_set_fg(COLOR_LGRAY);
 }
 
 static void cmd_disk_read(const char *args) {
     u32 lba = parse_u32(args);
     int r = ata_read(lba, 1, (u16 *)hex_buf);
-    if (r) { gfx_puts("ATA read error.\n"); return; }
+    if (r) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("ATA 读错误。\n"); gfx_set_fg(COLOR_LGRAY); return; }
     hex_dump(lba, (u8 *)hex_buf);
 }
 
@@ -152,14 +167,16 @@ static void cmd_disk_write(const char *args) {
     while ((*args >= '0' && *args <= '9') || (*args >= 'a' && *args <= 'f') || (*args >= 'A' && *args <= 'F')) args++;
     while (*args == ' ') args++;
     u8 val = (u8)parse_hex(args);
-    if (off >= 512) { gfx_puts("Offset must be < 512.\n"); return; }
+    if (off >= 512) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("偏移错。\n"); gfx_set_fg(COLOR_LGRAY); return; }
 
     int r = ata_read(lba, 1, (u16 *)hex_buf);
-    if (r) { gfx_puts("ATA read error.\n"); return; }
+    if (r) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("ATA 读错误。\n"); gfx_set_fg(COLOR_LGRAY); return; }
     hex_buf[off] = val;
     r = ata_write(lba, 1, (const u16 *)hex_buf);
-    if (r) { gfx_puts("ATA write error.\n"); return; }
-    gfx_puts("Wrote 0x"); gfx_put_hex_byte(val); gfx_puts(" at LBA "); gfx_put_hex_u32(lba); gfx_puts("+0x"); gfx_put_hex_byte((u8)off); gfx_putc('\n');
+    if (r) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("ATA 写错误。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    gfx_set_fg(COLOR_LGREEN);
+    gfx_puts_utf8("已写入 0x"); gfx_put_hex_byte(val); gfx_puts_utf8(" 于 LBA "); gfx_put_hex_u32(lba); gfx_puts("+0x"); gfx_put_hex_byte((u8)off); gfx_putc('\n');
+    gfx_set_fg(COLOR_LGRAY);
 }
 
 static void cmd_echo(const char *s) { if (s) gfx_puts(s); gfx_putc('\n'); }
@@ -168,39 +185,40 @@ static void cmd_ls(void) {
     fat_dir();
 }
 
-static void cmd_dir(void) {
-    fat_dir();
-}
-
 static void cmd_cd(const char *name) {
     while (*name == ' ') name++;
     if (!*name) { fat_cd("\\"); return; }
     int r = fat_cd(name);
-    if (r == -1) { gfx_puts("Not found.\n"); return; }
-    if (r == -2) { gfx_puts("Not a directory.\n"); return; }
+    if (r == -1) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("未找到。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    /* CD success: no output, prompt path updates automatically */
 }
 
 static void cmd_mkdir(const char *name) {
     while (*name == ' ') name++;
-    if (!*name) { gfx_puts("Usage: MKDIR <name>\n"); return; }
+    if (!*name) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: MKDIR <名>\n"); gfx_set_fg(COLOR_LGRAY); return; }
     int r = fat_mkdir(name);
-    if (r == -1) { gfx_puts("Already exists.\n"); return; }
-    if (r == -2) { gfx_puts("Disk full.\n"); return; }
-    if (r)       { gfx_puts("MKDIR failed.\n"); }
+    if (r == -1) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("已存在。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (r == -2) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("磁盘已满。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (r)       { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("创建目录失败。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    gfx_set_fg(COLOR_LGREEN); gfx_puts_utf8("成功\n"); gfx_set_fg(COLOR_LGRAY);
 }
 
 static void cmd_cat(const char *name) {
     while (*name == ' ') name++;
-    if (!*name) { gfx_puts("Usage: CAT <filename>\n"); return; }
-    if (fat_cat(name) != 0) gfx_puts("File not found.\n");
+    if (!*name) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: CAT <文件名>\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    int r = fat_cat(name);
+    if (r != 0) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("文件未找到。\n"); gfx_set_fg(COLOR_LGRAY); }
+    else gfx_putc('\n');
 }
 
 static void cmd_mouse(void) {
     int x, y, btn;
     mouse_get(&x, &y, &btn);
-    gfx_puts("Mouse: X="); gfx_put_hex_u32(x); 
+    gfx_set_fg(COLOR_LCYAN);
+    gfx_puts_utf8("鼠标: X="); gfx_put_hex_u32(x); 
     gfx_puts(" Y="); gfx_put_hex_u32(y);
     gfx_puts(" BTN="); gfx_put_hex_u32(btn); gfx_putc('\n');
+    gfx_set_fg(COLOR_LGRAY);
 }
 
 static const char ring3_msg[] = "Ring3: Hello!";
@@ -220,51 +238,113 @@ static void user_loop(void) {
 static void cmd_run(const char *args) {
     while (*args == ' ') args++;
     if (!*args) {
-        gfx_puts("Usage: RUN <filename>\n");
+        gfx_set_fg(COLOR_LRED);
+        gfx_puts_utf8("用法: RUN <文件名>\n");
+        gfx_set_fg(COLOR_LGRAY);
         return;
     }
-    if (load_binary(args) != 0)
-        gfx_puts("Failed to load program.\n");
+    if (load_binary(args) != 0) {
+        gfx_set_fg(COLOR_LRED);
+        gfx_puts_utf8("程序加载失败。\n");
+        gfx_set_fg(COLOR_LGRAY);
+    }
 }
 
 static void cmd_create(const char *args) {
     while (*args == ' ') args++;
-    if (!*args) { gfx_puts("Usage: CREATE <name> <content>\n"); return; }
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: CREATE <名> <内容>\n"); gfx_set_fg(COLOR_LGRAY); return; }
     char fname[64];
     int i = 0;
     while (*args && *args != ' ' && i < 63) fname[i++] = *args++;
     fname[i] = 0;
     while (*args == ' ') args++;
-    if (!*args) { gfx_puts("Usage: CREATE <name> <content>\n"); return; }
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: CREATE <名> <内容>\n"); gfx_set_fg(COLOR_LGRAY); return; }
     u32 len = 0;
     while (args[len]) len++;
     int r = fat_write_file(fname, (const u8 *)args, len);
-    if (r == 0) gfx_puts("OK\n");
-    else        gfx_puts("FAIL\n");
+    if (r == 0) { gfx_set_fg(COLOR_LGREEN); gfx_puts_utf8("成功\n"); gfx_set_fg(COLOR_LGRAY); }
+    else        { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("失败\n"); gfx_set_fg(COLOR_LGRAY); }
 }
 
 static void cmd_rm(const char *args) {
     while (*args == ' ') args++;
-    if (!*args) { gfx_puts("Usage: RM <name>\n"); return; }
-    if (fat_delete_file(args) == 0) gfx_puts("OK\n");
-    else                            gfx_puts("Not found.\n");
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: RM <文件名>\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (fat_delete_file(args) == 0) { gfx_set_fg(COLOR_LGREEN); gfx_puts_utf8("成功\n"); gfx_set_fg(COLOR_LGRAY); }
+    else                            { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("未找到。\n"); gfx_set_fg(COLOR_LGRAY); }
+}
+
+static void cmd_rmdir(const char *args) {
+    while (*args == ' ') args++;
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: RMDIR <目录>\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    int r = fat_rmdir(args);
+    if (r == -1) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("未找到。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (r == -2) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("目录非空。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    gfx_set_fg(COLOR_LGREEN); gfx_puts_utf8("成功\n"); gfx_set_fg(COLOR_LGRAY);
+}
+
+static void cmd_cp(const char *args) {
+    while (*args == ' ') args++;
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: CP <源> <目标>\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    char src[64]; int i = 0;
+    while (*args && *args != ' ' && i < 63) src[i++] = *args++;
+    src[i] = 0;
+    while (*args == ' ') args++;
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: CP <源> <目标>\n"); gfx_set_fg(COLOR_LGRAY); return; }
+
+    /* read source file */
+    static u8 copybuf[4096];
+    int sz = fat_read_file_buf(src, copybuf, 4096);
+    if (sz < 0) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("源文件未找到。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    if (sz > 4096) sz = 4096;
+
+    int r = fat_write_file(args, copybuf, (u32)sz);
+    if (r != 0) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("复制失败。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    gfx_set_fg(COLOR_LGREEN); gfx_puts_utf8("成功\n"); gfx_set_fg(COLOR_LGRAY);
+}
+
+static void cmd_mv(const char *args) {
+    while (*args == ' ') args++;
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: MV <原名> <新名>\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    char src[64]; int i = 0;
+    while (*args && *args != ' ' && i < 63) src[i++] = *args++;
+    src[i] = 0;
+    while (*args == ' ') args++;
+    if (!*args) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("用法: MV <原名> <新名>\n"); gfx_set_fg(COLOR_LGRAY); return; }
+
+    int r = fat_rename(src, args);
+    if (r != 0) { gfx_set_fg(COLOR_LRED); gfx_puts_utf8("未找到。\n"); gfx_set_fg(COLOR_LGRAY); return; }
+    gfx_set_fg(COLOR_LGREEN); gfx_puts_utf8("成功\n"); gfx_set_fg(COLOR_LGRAY);
 }
 
 static void cmd_reboot(void) {
-    gfx_puts("Rebooting...\n");
+    gfx_set_fg(COLOR_YELLOW);
+    gfx_puts_utf8("重启中...\n");
+    gfx_set_fg(COLOR_LGRAY);
     outb(0x64, 0xFE);
     __asm__ volatile("0: hlt; jmp 0b");
 }
 
 static void cmd_shutdown(void) {
-    gfx_puts("Halted.\n");
+    gfx_set_fg(COLOR_YELLOW);
+    gfx_puts_utf8("已停机。\n");
+    gfx_set_fg(COLOR_LGRAY);
     __asm__ volatile("0: hlt; jmp 0b");
 }
 
 void shell_loop(void) {
     gfx_puts("\n");
     for (;;) {
-        gfx_puts("XEKernel> ");
+        gfx_set_fg(COLOR_LGREEN);
+        gfx_puts("XEKernel");
+        gfx_set_fg(COLOR_LCYAN);
+        {
+            char cwd[32];
+            fat_cwd_str(cwd, 32);
+            gfx_puts(cwd);
+        }
+        gfx_set_fg(COLOR_LGREEN);
+        gfx_puts("> ");
+        gfx_set_fg(COLOR_LGRAY);
         gfx_cursor_draw();
         kb_readline(buf, CMD_BUF);
         gfx_cursor_erase();
@@ -286,24 +366,30 @@ void shell_loop(void) {
             cmd_disk_write(buf + 6);
         else if (!strcmp_ci(buf, "LS"))
             cmd_ls();
-        else if (!strcmp_ci(buf, "DIR"))
-            cmd_dir();
         else if (!strncmp_ci(buf, "CD ", 3))
             cmd_cd(buf + 3);
         else if (!strcmp_ci(buf, "CD"))
             cmd_cd("\\");
+        else if (!strcmp_ci(buf, "MKDIR"))
+            cmd_mkdir("");
         else if (!strncmp_ci(buf, "MKDIR ", 6))
             cmd_mkdir(buf + 6);
+        else if (!strcmp_ci(buf, "CAT"))
+            cmd_cat("");
         else if (!strncmp_ci(buf, "CAT ", 4))
             cmd_cat(buf + 4);
         else if (!strcmp_ci(buf, "MOUSE"))
             cmd_mouse();
-        else if (!strncmp_ci(buf, "RUN ", 4))
-            cmd_run(buf + 4);
         else if (!strcmp_ci(buf, "RUN"))
             cmd_run("");
+        else if (!strncmp_ci(buf, "RUN ", 4))
+            cmd_run(buf + 4);
+        else if (!strcmp_ci(buf, "CREATE"))
+            cmd_create("");
         else if (!strncmp_ci(buf, "CREATE ", 7))
             cmd_create(buf + 7);
+        else if (!strcmp_ci(buf, "RM"))
+            cmd_rm("");
         else if (!strncmp_ci(buf, "RM ", 3))
             cmd_rm(buf + 3);
         else if (!strncmp_ci(buf, "ECHO", 4)) {
@@ -311,11 +397,26 @@ void shell_loop(void) {
             while (*a == ' ') a++;
             cmd_echo(a);
         }
+        else if (!strcmp_ci(buf, "RMDIR"))
+            cmd_rmdir("");
+        else if (!strncmp_ci(buf, "RMDIR ", 6))
+            cmd_rmdir(buf + 6);
+        else if (!strcmp_ci(buf, "CP"))
+            cmd_cp("");
+        else if (!strncmp_ci(buf, "CP ", 3))
+            cmd_cp(buf + 3);
+        else if (!strcmp_ci(buf, "MV"))
+            cmd_mv("");
+        else if (!strncmp_ci(buf, "MV ", 3))
+            cmd_mv(buf + 3);
         else if (!strcmp_ci(buf, "REBOOT"))
             cmd_reboot();
         else if (!strcmp_ci(buf, "SHUTDOWN"))
             cmd_shutdown();
-        else
-            gfx_puts("Unknown command. Type HELP.\n");
+        else {
+            gfx_set_fg(COLOR_LRED);
+            gfx_puts_utf8("未知命令。输入 HELP 查看帮助。\n");
+            gfx_set_fg(COLOR_LGRAY);
+        }
     }
 }

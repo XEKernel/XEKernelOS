@@ -70,7 +70,6 @@ common_isr:
     push esp
     call c_isr_handler
     add esp, 4
-    mov esp, [esp + 12]
     popa
     add esp, 8
     iretd

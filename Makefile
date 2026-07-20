@@ -48,6 +48,9 @@ ISR_OBJ    = $(BLDDIR)/isr.o
 KERNEL_ELF = $(BLDDIR)/kernel.elf
 KERNEL_BIN = $(BLDDIR)/kernel.bin
 IMG        = $(BLDDIR)/xekernelos.img
+HELLO_BIN  = $(BLDDIR)/hello.bin
+
+USER_ASM   = $(SRCDIR)/user/hello.asm
 
 CFLAGS  = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
           -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
@@ -55,7 +58,7 @@ LDFLAGS = -m elf_i386
 
 .PHONY: all run clean
 
-all: $(IMG)
+all: $(IMG) $(HELLO_BIN)
 
 $(BOOT_BIN): $(BOOT_SRC) | $(BLDDIR)
 	$(NASM) -f bin $< -o $@
@@ -98,6 +101,10 @@ $(IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) build_img.py
 
 $(BLDDIR):
 	mkdir -p $(BLDDIR) $(BLDDIR)/kernel $(BLDDIR)/drivers $(BLDDIR)/shell $(BLDDIR)/fs $(BLDDIR)/lib
+
+$(HELLO_BIN): $(USER_ASM) | $(BLDDIR)
+	$(NASM) -f bin $< -o $@
+	@echo "  User hello: $$(wc -c < $@)B"
 
 run: $(IMG)
 	qemu-system-i386 -fda $< -hda $(BLDDIR)/disk.img -m 32

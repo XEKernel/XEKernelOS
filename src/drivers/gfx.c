@@ -1,8 +1,10 @@
 #include "drivers/gfx.h"
 #include "drivers/font8x16.h"
+#include "drivers/font_cn.h"
 
-#define FONT_W  8
-#define FONT_H  16
+#define FONT_W   10
+#define FONT_H   16
+#define FONT_CN_W 16
 
 static u8  *gfx_fb;
 static int  gfx_w, gfx_h, gfx_pitch, gfx_bpp;
@@ -38,6 +40,14 @@ void gfx_init(void) {
     gfx_rows  = gfx_h / FONT_H;
     init_palette();
     cx = cy = 0;
+}
+
+void gfx_set_fg(u8 color) {
+    fg_color = color & 0x0F;
+}
+
+void gfx_set_bg(u8 color) {
+    bg_color = color & 0x0F;
 }
 
 void gfx_set_pixel(int x, int y, u8 color) {
@@ -120,7 +130,7 @@ void gfx_putc(char c) {
 
 void gfx_cursor_draw(void) {
     int sx = cx * FONT_W, sy = cy * FONT_H + FONT_H - 2;
-    gfx_fill_rect(sx, sy, FONT_W, 2, 0x0F);
+    gfx_fill_rect(sx, sy, FONT_W, 2, fg_color);
 }
 
 void gfx_cursor_erase(void) {
@@ -143,4 +153,68 @@ void gfx_put_hex_u32(u32 v) {
     gfx_put_hex_byte((v >> 16) & 0xFF);
     gfx_put_hex_byte((v >> 8) & 0xFF);
     gfx_put_hex_byte(v & 0xFF);
+}
+
+/* ---- Chinese font (16x16) support ---- */
+
+static const unsigned char *font_cn_lookup(u16 cp) {
+    int lo = 0, hi = FONT_CN_COUNT - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (font_cn_codepoint[mid] == cp)
+            return &font_cn_data[mid * 32];
+        else if (font_cn_codepoint[mid] < cp)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return 0;
+}
+
+static void draw_cn_char(int sx, int sy, u16 cp, u8 fg, u8 bg) {
+    const unsigned char *glyph = font_cn_lookup(cp);
+    for (int row = 0; row < 16; row++) {
+        u8 b0, b1;
+        if (glyph) {
+            b0 = glyph[row * 2];
+            b1 = glyph[row * 2 + 1];
+        } else {
+            /* placeholder: hollow box */
+            b0 = (row == 0 || row == 15) ? 0xFF : 0x81;
+            b1 = (row == 0 || row == 15) ? 0xFF : 0x81;
+        }
+        for (int col = 0; col < 16; col++) {
+            u8 bit = (col < 8) ? (b0 >> (7 - col)) : (b1 >> (15 - col));
+            u8 color = (bit & 1) ? fg : bg;
+            gfx_set_pixel(sx + col, sy + row, color);
+        }
+    }
+}
+
+static int utf8_decode(const char *s, u16 *cp) {
+    u8 c = (u8)s[0];
+    if (c < 0x80) { *cp = c; return 1; }
+    if ((c & 0xE0) == 0xC0) { *cp = (u16)(((c & 0x1F) << 6) | (s[1] & 0x3F)); return 2; }
+    if ((c & 0xF0) == 0xE0) { *cp = (u16)(((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F)); return 3; }
+    *cp = c; return 1;
+}
+
+void gfx_puts_utf8(const char *s) {
+    int i = 0;
+    while (s[i]) {
+        u16 cp;
+        int len = utf8_decode(s + i, &cp);
+        if (len == 1 && cp < 0x80) {
+            gfx_putc((char)cp);
+        } else {
+            /* Chinese char: 2 ASCII cells wide */
+            if (cx >= gfx_cols - 1) { cx = 0; cy++; }
+            if (cy >= gfx_rows) gfx_scroll();
+            draw_cn_char(cx * FONT_W, cy * FONT_H, cp, fg_color, bg_color);
+            cx += 2;
+            if (cx >= gfx_cols) { cx = 0; cy++; }
+            if (cy >= gfx_rows) gfx_scroll();
+        }
+        i += len;
+    }
 }

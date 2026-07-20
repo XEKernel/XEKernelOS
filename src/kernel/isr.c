@@ -22,7 +22,7 @@ void c_isr_handler(registers_t *r) {
         return;
     }
 
-    if (vec == 0x80) {
+    if (vec == 14) {
         u32 cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         gfx_puts("\n#PF at EIP=0x");

@@ -237,7 +237,9 @@ void shell_loop(void) {
     gfx_puts("\n");
     for (;;) {
         gfx_puts("XEKernel> ");
+        gfx_cursor_draw();
         kb_readline(buf, CMD_BUF);
+        gfx_cursor_erase();
         if (!buf[0]) continue;
 
         if (!strcmp_ci(buf, "HELP"))

@@ -118,6 +118,16 @@ void gfx_putc(char c) {
     if (cy >= gfx_rows) gfx_scroll();
 }
 
+void gfx_cursor_draw(void) {
+    int sx = cx * FONT_W, sy = cy * FONT_H + FONT_H - 2;
+    gfx_fill_rect(sx, sy, FONT_W, 2, 0x0F);
+}
+
+void gfx_cursor_erase(void) {
+    int sx = cx * FONT_W, sy = cy * FONT_H;
+    draw_char(sx, sy, ' ', fg_color, bg_color);
+}
+
 void gfx_puts(const char *s) {
     for (int i = 0; s[i]; i++) gfx_putc(s[i]);
 }

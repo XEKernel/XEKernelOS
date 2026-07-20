@@ -67,7 +67,7 @@ void kernel_main(void) {
     dbg_puts(" pitch="); dbg_putc('0' + pt / 1000 % 10); dbg_putc('0' + pt / 100 % 10);
     dbg_putc('\n');
 
-    gfx_clear(0x01);
+    gfx_clear(0x00);
     gfx_puts("XEKernelOS v0.2.0 | x86 Protected Mode\n");
     gfx_puts("----------------------------------------\n");
 

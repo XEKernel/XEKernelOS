@@ -8,3 +8,8 @@ void pic_remap(void) {
     outb(0x21, 0x01); outb(0xA1, 0x01);
     outb(0x21, 0xFB); outb(0xA1, 0xFF);
 }
+
+void pic_unmask_irq(int irq) {
+    if (irq < 8) outb(0x21, inb(0x21) & ~(1 << irq));
+    else         outb(0xA1, inb(0xA1) & ~(1 << (irq - 8)));
+}

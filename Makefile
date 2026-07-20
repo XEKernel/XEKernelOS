@@ -69,6 +69,9 @@ $(BLDDIR)/drivers/%.o: $(SRCDIR)/drivers/%.c | $(BLDDIR)
 $(BLDDIR)/shell/%.o: $(SRCDIR)/shell/%.c | $(BLDDIR)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
+$(BLDDIR)/fs/%.o: $(SRCDIR)/fs/%.c | $(BLDDIR)
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
 $(KERNEL_ELF): $(ISR_OBJ) $(C_OBJS) $(LINKER_SRC)
 	$(LD) $(LDFLAGS) -T $(LINKER_SRC) $(ISR_OBJ) $(C_OBJS) -o $@
 
@@ -85,7 +88,7 @@ $(IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) build_img.py
 	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN))B"
 
 $(BLDDIR):
-	mkdir -p $(BLDDIR) $(BLDDIR)/kernel $(BLDDIR)/drivers $(BLDDIR)/shell
+	mkdir -p $(BLDDIR) $(BLDDIR)/kernel $(BLDDIR)/drivers $(BLDDIR)/shell $(BLDDIR)/fs
 
 run: $(IMG)
 	qemu-system-i386 -fda $< -hda $(BLDDIR)/disk.img -m 32

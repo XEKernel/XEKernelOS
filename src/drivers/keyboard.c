@@ -9,13 +9,29 @@ static const char kbd_tab[] = {
     'b','n','m',',','.','/',0,'*',0,' ',0,0,0,0,0,0,
 };
 
+static void kb_cmd(u8 cmd) {
+    for (int i = 0; i < 10000; i++) if (!(inb(0x64) & 2)) break;
+    outb(0x60, cmd);
+}
+
+static u8 kb_await(void) {
+    for (int i = 0; i < 100000; i++) {
+        u8 st = inb(KB_STATUS);
+        if (st & 1) return inb(KB_DATA);
+    }
+    return 0;
+}
+
 void kb_init(void) {
     outb(0x64, 0xAE);
-    for (int i = 0; i < 1000; i++) if (!(inb(0x64) & 2)) break;
+    for (int i = 0; i < 10000; i++) if (!(inb(0x64) & 2)) break;
     outb(0x64, 0x60);
-    for (int i = 0; i < 1000; i++) if (!(inb(0x64) & 2)) break;
+    for (int i = 0; i < 10000; i++) if (!(inb(0x64) & 2)) break;
     outb(0x60, 0x44);
     while (inb(KB_STATUS) & 1) inb(KB_DATA);
+
+    kb_cmd(0xF4);
+    kb_await();
 }
 
 static u8 kb_read_scan(void) {

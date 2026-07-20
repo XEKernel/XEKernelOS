@@ -1,4 +1,5 @@
 #include "drivers/mouse.h"
+#include "drivers/pic.h"
 #include "kernel/isr.h"
 #include "lib/ports.h"
 
@@ -58,7 +59,7 @@ void mouse_init(void) {
 
     mouse_cycle = 0;
     isr_register(0x2C, mouse_irq);
-    outb(0xA1, inb(0xA1) & ~0x10);
+    pic_unmask_irq(12);
 }
 
 int mouse_get(int *x, int *y, int *btn) {

@@ -37,8 +37,9 @@ SERIAL_C = $(SRCDIR)/drivers/serial.c
 FAT_C    = $(SRCDIR)/fs/fat12.c
 SHELL_C  = $(SRCDIR)/shell/shell.c
 HEAP_C   = $(SRCDIR)/lib/heap.c
+STRUTIL_C = $(SRCDIR)/lib/strutil.c
 
-C_SRCS   = $(KERN_C) $(ISR_C) $(IDT_C) $(MM_C) $(PAGING_C) $(USER_C) $(PANIC_C) $(SYSCALL_C) $(TASK_C) $(LOADER_C) $(KB_C) $(PIC_C) $(PIT_C) $(MOUSE_C) $(ATA_C) $(GFX_C) $(SERIAL_C) $(FAT_C) $(SHELL_C) $(HEAP_C)
+C_SRCS   = $(KERN_C) $(ISR_C) $(IDT_C) $(MM_C) $(PAGING_C) $(USER_C) $(PANIC_C) $(SYSCALL_C) $(TASK_C) $(LOADER_C) $(KB_C) $(PIC_C) $(PIT_C) $(MOUSE_C) $(ATA_C) $(GFX_C) $(SERIAL_C) $(FAT_C) $(SHELL_C) $(HEAP_C) $(STRUTIL_C)
 C_OBJS   = $(patsubst $(SRCDIR)/%.c,$(BLDDIR)/%.o,$(C_SRCS))
 
 BOOT_BIN   = $(BLDDIR)/boot.bin

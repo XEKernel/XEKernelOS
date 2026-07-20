@@ -11,6 +11,8 @@ static int  cx, cy;
 static u8   fg_color = 0x0F;
 static u8   bg_color = 0x00;
 
+int gfx_dbg_w, gfx_dbg_h, gfx_dbg_bpp, gfx_dbg_pitch;
+
 static u32 palette[256];
 
 static void init_palette(void) {
@@ -30,10 +32,14 @@ void gfx_init(void) {
     gfx_fb    = (u8 *)vbe[0];
     gfx_w     = (int)vbe[1];
     gfx_h     = (int)vbe[2];
-    gfx_bpp   = 32;
-    gfx_pitch = gfx_w * 4;
+    gfx_bpp   = (int)vbe[3];
+    gfx_pitch = (int)vbe[4];
+    int min_pitch = gfx_w * (gfx_bpp / 8);
+    if (gfx_pitch < min_pitch) gfx_pitch = min_pitch;
     gfx_cols  = gfx_w / FONT_W;
     gfx_rows  = gfx_h / FONT_H;
+    gfx_dbg_w = gfx_w; gfx_dbg_h = gfx_h;
+    gfx_dbg_bpp = gfx_bpp; gfx_dbg_pitch = gfx_pitch;
     init_palette();
     cx = cy = 0;
 }

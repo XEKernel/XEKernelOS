@@ -40,6 +40,29 @@ void kernel_main(void) {
     idt_init();     serial_write_str("idt_init ok\n");
     mm_init();      serial_write_str("mm_init ok\n");
     gfx_init();     serial_write_str("gfx_init ok\n");
+    {
+        extern int gfx_dbg_w, gfx_dbg_h, gfx_dbg_bpp, gfx_dbg_pitch;
+        serial_write_str("gfx_dbg: w=");
+        serial_write_char('0' + gfx_dbg_w / 1000 % 10);
+        serial_write_char('0' + gfx_dbg_w / 100 % 10);
+        serial_write_char('0' + gfx_dbg_w / 10 % 10);
+        serial_write_char('0' + gfx_dbg_w % 10);
+        serial_write_str(" h=");
+        serial_write_char('0' + gfx_dbg_h / 1000 % 10);
+        serial_write_char('0' + gfx_dbg_h / 100 % 10);
+        serial_write_char('0' + gfx_dbg_h / 10 % 10);
+        serial_write_char('0' + gfx_dbg_h % 10);
+        serial_write_str(" bpp=");
+        serial_write_char('0' + gfx_dbg_bpp / 10 % 10);
+        serial_write_char('0' + gfx_dbg_bpp % 10);
+        serial_write_str(" pitch=");
+        serial_write_char('0' + gfx_dbg_pitch / 10000 % 10);
+        serial_write_char('0' + gfx_dbg_pitch / 1000 % 10);
+        serial_write_char('0' + gfx_dbg_pitch / 100 % 10);
+        serial_write_char('0' + gfx_dbg_pitch / 10 % 10);
+        serial_write_char('0' + gfx_dbg_pitch % 10);
+        serial_write_char('\n');
+    }
     heap_init();    serial_write_str("heap_init ok\n");
     pit_init();     serial_write_str("pit_init ok\n");
     mouse_init();   serial_write_str("mouse_init ok\n");

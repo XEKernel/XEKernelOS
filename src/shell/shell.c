@@ -9,28 +9,13 @@
 #include "kernel/loader.h"
 #include "fs/fat12.h"
 #include "lib/ports.h"
+#include "lib/strutil.h"
+
+#include "drivers/serial.h"
+
+// (keep other includes)
 
 static char buf[CMD_BUF];
-
-static int __attribute__((noinline)) strcmp_ci(const char *a, const char *b) {
-    while (*a && *b) {
-        char ca = (*a >= 'a' && *a <= 'z') ? *a - 32 : *a;
-        char cb = (*b >= 'a' && *b <= 'z') ? *b - 32 : *b;
-        if (ca != cb) return (u8)ca - (u8)cb;
-        a++; b++;
-    }
-    return (u8)*a - (u8)*b;
-}
-
-static int __attribute__((noinline)) strncmp_ci(const char *a, const char *b, int n) {
-    for (int i = 0; i < n; i++) {
-        char ca = (a[i]>='a'&&a[i]<='z') ? a[i]-32 : a[i];
-        char cb = (b[i]>='a'&&b[i]<='z') ? b[i]-32 : b[i];
-        if (ca != cb) return (u8)ca - (u8)cb;
-        if (!a[i] || !b[i]) break;
-    }
-    return 0;
-}
 
 static u32 parse_u32(const char *s) {
     u32 v = 0;

@@ -2,11 +2,11 @@
 #include "lib/ports.h"
 #include "drivers/gfx.h"
 #include "drivers/keyboard.h"
-#include "drivers/pic.h"
 #include "drivers/ata.h"
 #include "drivers/pit.h"
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
+#include "drivers/pic.h"
 #include "lib/heap.h"
 #include "lib/list.h"
 #include "kernel/isr.h"
@@ -14,10 +14,16 @@
 #include "kernel/mm.h"
 #include "kernel/paging.h"
 #include "kernel/user.h"
+#include "kernel/task.h"
 #include "fs/fat12.h"
 #include "shell/shell.h"
 
 extern u32 _bss_start[], _bss_end[];
+
+static void idle_task(void *arg) {
+    (void)arg;
+    for (;;) __asm__ volatile("hlt");
+}
 
 __attribute__((section(".text.init")))
 void kernel_main(void) {
@@ -133,5 +139,16 @@ void kernel_main(void) {
     if (f == 0) gfx_puts("[OK] FAT12 filesystem ready\n");
     else        gfx_puts("[--] FAT12: no filesystem\n");
 
-    shell_loop();
+    task_init();
+
+    serial_write_str("create shell task\n");
+    task_create((void (*)(void *))shell_loop, 0);
+
+    serial_write_str("create idle task\n");
+    task_create(idle_task, 0);
+
+    serial_write_str("=== multitasking started ===\n");
+    pic_unmask_irq(0);
+    __asm__("sti");
+    for (;;) __asm__ volatile("hlt");
 }

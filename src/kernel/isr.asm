@@ -1,7 +1,5 @@
 ; ============================================================
-; XEKernelOS - ISR Stubs (48 interrupt handlers)
-;   异常 0-31 (CPU exceptions)
-;   IRQ  0-15 (mapped to 0x20-0x2F after PIC remap)
+; XEKernelOS - ISR Stubs (48+ interrupt handlers)
 ; ============================================================
 
 %macro ISR_NOERR 1
@@ -52,10 +50,9 @@ ISR_NOERR 29
 ISR_NOERR 30
 ISR_NOERR 31
 
-; 系统调用 (int 0x80)
 ISR_NOERR 128
 
-; IRQ handlers (mapped to 0x20-0x2F after PIC remap)
+; IRQ handlers
 %assign i 0
 %rep 16
 global irq %+ i
@@ -73,11 +70,11 @@ common_isr:
     push esp
     call c_isr_handler
     add esp, 4
+    mov esp, [esp + 12]
     popa
     add esp, 8
-    iretl
+    iretd
 
-; ISR address table (referenced by kernel.c idt_init)
 section .rodata
 global isr_addrs
 isr_addrs:

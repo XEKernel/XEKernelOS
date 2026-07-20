@@ -1,5 +1,6 @@
 #include "kernel/isr.h"
 #include "kernel/panic.h"
+#include "kernel/task.h"
 #include "drivers/gfx.h"
 #include "lib/ports.h"
 
@@ -16,12 +17,12 @@ void c_isr_handler(registers_t *r) {
 
     if (handlers[vec]) handlers[vec]();
 
-    if (vec == 0x80) {
-        syscall_handler(r);
+    if (vec == 0x20) {
+        schedule(r);
         return;
     }
 
-    if (vec == 14) {
+    if (vec == 0x80) {
         u32 cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         gfx_puts("\n#PF at EIP=0x");

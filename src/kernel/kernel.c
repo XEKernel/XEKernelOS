@@ -53,6 +53,7 @@ void kernel_main(void) {
     pit_init();     dbg_puts("pit_init ok\n");
     mouse_init();   dbg_puts("mouse_init ok\n");
     kb_init();      dbg_puts("kb_init ok\n");
+    user_init();    dbg_puts("user_init ok\n");
 
     u32 *vbe = (u32 *)0x500;
     u32 fb = vbe[0], w = vbe[1], h = vbe[2], b = vbe[3], pt = vbe[4];

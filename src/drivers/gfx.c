@@ -108,7 +108,7 @@ static void gfx_scroll(void) {
 void gfx_putc(char c) {
     if (c == '\n') { cx = 0; cy++; }
     else if (c == '\r') cx = 0;
-    else if (c == '\b') { if (cx > 0) cx--; }
+    else if (c == '\b') { if (cx > 0) { cx--; gfx_fill_rect(cx * FONT_W, cy * FONT_H, FONT_W, FONT_H, bg_color); } }
     else if (c == '\t') { cx = (cx + 4) & ~3; if (cx >= gfx_cols) { cx = 0; cy++; } }
     else if ((u8)c >= ' ') {
         draw_char(cx * FONT_W, cy * FONT_H, c, fg_color, bg_color);

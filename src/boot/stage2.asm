@@ -23,28 +23,10 @@ entry:
     mov bx, 0x4144
     or bx, 0x4000
     int 0x10
-    cmp ah, 0
-    je .vbe_ok
 
-    ; 备用: 0x4118 (1024x768x24)
-    mov ax, 0x4F02
-    mov bx, 0x4118
-    or bx, 0x4000
-    int 0x10
-    cmp ah, 0
-    je .vbe_ok
-
-    ; 再备用: 0x4105 (1024x768x32)
-    mov ax, 0x4F02
-    mov bx, 0x4105
-    or bx, 0x4000
-    int 0x10
-
-.vbe_ok:
     mov di, mode_info
     mov ax, 0x4F01
-    mov cx, bx
-    and cx, 0x3FFF
+    mov cx, 0x4144
     int 0x10
 
     push ds

@@ -44,7 +44,7 @@ def main():
         '-fda', floppy,
         '-hda', disk,
         '-m', '32',
-        '-display', 'gtk',
+        '-display', 'sdl',
         '-boot', 'order=a',
     ]
     print("XEKernelOS - Starting QEMU...")

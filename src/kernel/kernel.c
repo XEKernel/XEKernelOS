@@ -100,13 +100,14 @@ void kernel_main(void) {
         gfx_puts("[--] ATA: no drive\n");
     }
 
+    gfx_puts("----------------------------------------\n");
+    dbg_puts("=== Shell started ===\n");
+
     dbg_puts("fat_init calling...\n");
     int f = fat_init();
     dbg_puts("fat_init done\n");
     if (f == 0) gfx_puts("[OK] FAT12 filesystem ready\n");
-    else                 gfx_puts("[--] FAT12: no filesystem\n");
+    else        gfx_puts("[--] FAT12: no filesystem\n");
 
-    gfx_puts("----------------------------------------\n");
-    dbg_puts("=== Shell started ===\n");
     shell_loop();
 }

@@ -243,7 +243,7 @@ static void cmd_run(const char *args) {
         gfx_set_fg(COLOR_LGRAY);
         return;
     }
-    if (load_binary(args) != 0) {
+    if (load_binary(args, args) != 0) {
         gfx_set_fg(COLOR_LRED);
         gfx_puts_utf8("程序加载失败。\n");
         gfx_set_fg(COLOR_LGRAY);

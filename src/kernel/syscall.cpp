@@ -90,6 +90,29 @@ static void sys_sbrk(registers_t *r) {
     r->eax = old_break;
 }
 
+static void sys_getcwd(registers_t *r) {
+    char *buf = (char *)r->ebx;
+    int max = (int)r->ecx;
+    if (!buf || max <= 0) { r->eax = (u32)-1; return; }
+    fat.cwd_str(buf, max);
+    int n = 0; while (buf[n]) n++;
+    r->eax = n;
+}
+
+static void sys_time(registers_t *r) {
+    char *buf = (char *)r->ebx;
+    if (!buf) { r->eax = (u32)-1; return; }
+    /* Read CMOS RTC: seconds at 0x00, minutes at 0x02, hours at 0x04 */
+    auto bcd = [](u8 v) -> u8 { return ((v >> 4) & 0x0F) * 10 + (v & 0x0F); };
+    outb(0x70, 0x04); u8 h = bcd(inb(0x71));
+    outb(0x70, 0x02); u8 m = bcd(inb(0x71));
+    outb(0x70, 0x00); u8 s = bcd(inb(0x71));
+    buf[0] = '0' + (h / 10); buf[1] = '0' + (h % 10); buf[2] = ':';
+    buf[3] = '0' + (m / 10); buf[4] = '0' + (m % 10); buf[5] = ':';
+    buf[6] = '0' + (s / 10); buf[7] = '0' + (s % 10); buf[8] = 0;
+    r->eax = 8;
+}
+
 extern "C" void syscall_handler(registers_t *r) {
     __asm__ volatile("movb $'[', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     char c = '0' + (r->eax % 10);
@@ -102,6 +125,8 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_OPEN:  sys_open(r);  break;
     case SYS_FREAD: sys_fread(r); break;
     case SYS_SBRK:  sys_sbrk(r);  break;
+    case SYS_GETCWD: sys_getcwd(r); break;
+    case SYS_TIME:  sys_time(r);  break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
         if (f_buf) { kfree(f_buf); f_buf = nullptr; f_size = 0; }

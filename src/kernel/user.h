@@ -3,9 +3,10 @@
 
 class PagingManager;
 void user_init(void);
-void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd);
+void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd,
+                     int argc, const char *args);
 
-/* Set by enter_user_mode, read by ISR for CR3 restore */
 extern PagingManager *g_user_pd;
-/* Kernel ESP before entering user mode — restored by SYS_EXIT */
 extern u32 g_entry_esp;
+/* User program arguments — stored by loader, consumed by enter_user_mode */
+extern char g_user_args[256];

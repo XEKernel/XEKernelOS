@@ -9,6 +9,16 @@
 
 #define USER_LOAD_ADDR 0x400000
 
+static int count_args(const char *s) {
+    int n = 0, in_word = 0;
+    while (*s) {
+        if (*s == ' ') { in_word = 0; s++; continue; }
+        if (!in_word) { n++; in_word = 1; }
+        s++;
+    }
+    return n;
+}
+
 static void fail(const char *msg) {
     gfx_set_fg(COLOR_LRED);
     gfx_puts(msg);
@@ -18,7 +28,7 @@ static void fail(const char *msg) {
     serial_write_char('\n');
 }
 
-static int load_flat_binary(const char *path) {
+static int load_flat_binary(const char *path, const char *args) {
     u8 *buf = (u8 *)kmalloc(65536);
     if (!buf) { fail("loader: out of memory"); return -1; }
 
@@ -39,12 +49,13 @@ static int load_flat_binary(const char *path) {
 
     PagingManager *user_pd = new PagingManager();
     gfx_puts("Running user program...\n");
-    enter_user_mode(USER_LOAD_ADDR, 0, user_pd);
+    int ac = args ? count_args(args) : 0;
+    enter_user_mode(USER_LOAD_ADDR, 0, user_pd, ac, args);
     gfx_putc('\n');
     return 0;
 }
 
-static int load_elf_binary(const char *path) {
+static int load_elf_binary(const char *path, const char *args) {
     u8 *buf = (u8 *)kmalloc(65536);
     if (!buf) { fail("loader: out of memory"); return -1; }
 
@@ -52,11 +63,9 @@ static int load_elf_binary(const char *path) {
     if (sz <= 0) { kfree(buf); fail("loader: file not found"); return -1; }
     if (sz < 52)   { kfree(buf); fail("elf: file too small"); return -1; }
 
-    /* Validate ELF header */
     if (buf[0]!=0x7F || buf[1]!='E' || buf[2]!='L' || buf[3]!='F') {
-        /* Not ELF — try flat binary fallback */
         kfree(buf);
-        return load_flat_binary(path);
+        return load_flat_binary(path, args);
     }
 
     Elf32_Ehdr *ehdr = (Elf32_Ehdr *)buf;
@@ -87,8 +96,7 @@ static int load_elf_binary(const char *path) {
     for (u16 i = 0; i < ehdr->e_phnum; i++) {
         Elf32_Phdr *ph = &phdrs[i];
         if (ph->p_type != 1) continue;
-        /* Skip read-only shadow segments (PHDR), keep W or X ones */
-        if (!(ph->p_flags & 3)) continue;  /* 3 = PF_W | PF_X */
+        if (!(ph->p_flags & 3)) continue;
 
         serial_write_str("elf: segment vaddr=0x");
         for (int j = 28; j >= 0; j -= 4) serial_write_char(hex[(ph->p_vaddr >> j) & 15]);
@@ -106,11 +114,12 @@ static int load_elf_binary(const char *path) {
     kfree(buf);
     PagingManager *user_pd = new PagingManager();
     gfx_puts("Running ELF program...\n");
-    enter_user_mode(entry, 0, user_pd);
+    int ac = args ? count_args(args) : 0;
+    enter_user_mode(entry, 0, user_pd, ac, args);
     gfx_putc('\n');
     return 0;
 }
 
-int load_binary(const char *path) {
-    return load_elf_binary(path);
+int load_binary(const char *path, const char *args) {
+    return load_elf_binary(path, args);
 }

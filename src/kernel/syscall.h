@@ -7,6 +7,8 @@
 #define SYS_OPEN  4
 #define SYS_FREAD 5
 #define SYS_SBRK  6
+#define SYS_GETCWD 7
+#define SYS_TIME   8
 
 #ifdef __cplusplus
 extern "C" {

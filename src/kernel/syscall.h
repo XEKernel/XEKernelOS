@@ -6,6 +6,7 @@
 #define SYS_READ  3
 #define SYS_OPEN  4
 #define SYS_FREAD 5
+#define SYS_SBRK  6
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,6 +1,7 @@
 #include "kernel/syscall.h"
 #include "kernel/user.h"
 #include "kernel/paging.h"
+#include "kernel/mm.h"
 #include "drivers/serial.h"
 #include "drivers/keyboard.h"
 #include "fs/fat12.h"
@@ -10,6 +11,9 @@
 /* File descriptor: single-open for now */
 static u8  *f_buf = nullptr;
 static u32  f_size = 0;
+
+/* Heap break — starts at 0x10000000 (PDE 64, clear of kernel PDEs) */
+static u32 user_break = 0x10000000;
 
 static void sys_write(registers_t *r) {
     char *str = (char *)r->ebx;
@@ -65,6 +69,27 @@ static void sys_fread(registers_t *r) {
     r->eax = len;
 }
 
+static void sys_sbrk(registers_t *r) {
+    u32 bytes = r->ebx;
+    if (bytes == 0) { r->eax = user_break; return; }
+
+    /* Page-align the request upward */
+    u32 pages = (bytes + 0xFFF) / 0x1000;
+    u32 old_break = user_break;
+
+    if (!g_user_pd) { r->eax = (u32)-1; return; }
+
+    for (u32 i = 0; i < pages; i++) {
+        u32 phys = mm_alloc_page();
+        if (!phys) { r->eax = (u32)-1; return; }
+        /* Map into user page directory */
+        g_user_pd->map_page(user_break, phys, PT_FLAGS);
+        user_break += 0x1000;
+    }
+
+    r->eax = old_break;
+}
+
 extern "C" void syscall_handler(registers_t *r) {
     __asm__ volatile("movb $'[', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     char c = '0' + (r->eax % 10);
@@ -76,6 +101,7 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_READ:  sys_read(r);  break;
     case SYS_OPEN:  sys_open(r);  break;
     case SYS_FREAD: sys_fread(r); break;
+    case SYS_SBRK:  sys_sbrk(r);  break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
         if (f_buf) { kfree(f_buf); f_buf = nullptr; f_size = 0; }

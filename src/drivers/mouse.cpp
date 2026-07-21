@@ -1,5 +1,6 @@
 #include "drivers/mouse.h"
 #include "drivers/pic.h"
+#include "drivers/serial.h"
 #include "kernel/isr.h"
 #include "lib/ports.h"
 
@@ -29,8 +30,11 @@ u8 Mouse::read() {
 }
 
 void Mouse::irq_handler() {
+    static int mcount = 0;
     u8 st = inb(0x64);
     if ((st & 0x20) && (st & 1)) {
+        mcount++;
+        if (mcount <= 3) serial_write_char('M');
         u8 data = inb(0x60);
         mouse.pkt_[mouse.cycle_] = data;
         mouse.cycle_ = (mouse.cycle_ + 1) % 3;
@@ -51,7 +55,8 @@ void Mouse::init() {
     wait(1); outb(0x64, 0x60);
     wait(1); outb(0x60, cmd | 2);
 
-    write(0xF6); read();
+    write(0xF6); read();   /* set defaults */
+    write(0xF4); read();   /* enable data reporting — THIS WAS MISSING! */
 
     cycle_ = 0;
     isr_register(0x2C, irq_handler);

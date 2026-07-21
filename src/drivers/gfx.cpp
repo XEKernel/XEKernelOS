@@ -2,6 +2,7 @@
 #include "drivers/font8x16.h"
 #include "drivers/font_cn.h"
 #include "drivers/mouse.h"
+#include "drivers/serial.h"
 
 GfxDriver gfx;
 
@@ -217,37 +218,28 @@ void GfxDriver::mcursor_restore() {
 }
 
 void GfxDriver::mcursor_draw() {
-    int stride = w_ * 4;  /* actual stride */
+    int stride = w_ * 4;
+    if (w_ <= 0 || h_ <= 0) return;
+
+    /* Read mouse — draw 8x8 white box at its position */
     int mx, my, mb;
     mouse_get(&mx, &my, &mb);
-    if (mx < 0) mx = 0; if (mx >= w_) mx = w_ - 1;
-    if (my < 0) my = 0; if (my >= h_) my = h_ - 1;
-    cur_x_ = mx - cur_w_ / 2;
-    cur_y_ = my - cur_h_ / 2;
+    cur_x_ = mx - 4; if (cur_x_ < 0) cur_x_ = 0;
+    cur_y_ = my - 4; if (cur_y_ < 0) cur_y_ = 0;
 
-    static const u8 cross[8] = {
-        0b00011000, 0b00011000,
-        0b00011000, 0b00011000,
-        0b11111111, 0b11111111,
-        0b00011000, 0b00011000,
-    };
-
-    for (int y = 0; y < cur_h_; y++) {
+    for (int y = 0; y < 8; y++) {
         int fy = cur_y_ + y;
         if (fy < 0 || fy >= h_) continue;
-        for (int x = 0; x < cur_w_; x++) {
+        for (int x = 0; x < 8; x++) {
             int fx = cur_x_ + x;
             if (fx < 0 || fx >= w_) continue;
             int off = fy * stride + fx * 4;
-            u32 *p = (u32 *)(fb_ + off);
-            cur_save_[y * cur_w_ + x] = *p;
-            if (cross[y] & (1 << x))
-                *p = 0x00FFFFFF;  /* white */
+            *(u32 *)(fb_ + off) = 0x00FF0000;  /* red box */
         }
     }
 }
 
 void GfxDriver::mcursor_update() {
-    mcursor_restore();
+    /* skip restore for debugging */
     mcursor_draw();
 }

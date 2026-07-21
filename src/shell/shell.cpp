@@ -362,7 +362,6 @@ void shell_redraw(void) {
 
 void shell_loop(void) {
     shell_save_esp();
-    gfx_puts("\n");
     for (;;) {
         gfx_set_fg(COLOR_LGREEN);
         gfx_puts("XEKernel");
@@ -376,6 +375,7 @@ void shell_loop(void) {
         gfx_puts("> ");
         gfx_set_fg(COLOR_LGRAY);
         gfx_cursor_draw();
+        gfx.mcursor_draw();
         kb_readline(buf, CMD_BUF);
         gfx_cursor_erase();
         if (!buf[0]) continue;

@@ -177,9 +177,9 @@ real_start:
 ; load kernel part11 (LBA 101-106, 6 sectors) to 0x2A800
     mov ah, 0x02
     mov al, 6
-    mov ch, 3
-    mov cl, 3
-    mov dh, 0
+    mov ch, 2
+    mov cl, 12
+    mov dh, 1
     mov dl, 0x00
     push 0x2000
     pop es

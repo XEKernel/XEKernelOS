@@ -27,3 +27,6 @@ extern SerialPort com1;
 inline int  serial_init()            { com1.init(); return 0; }
 inline void serial_write_char(char c) { com1.putc(c); }
 inline void serial_write_str(const char *s) { com1.puts(s); }
+inline void serial_write_str_len(const char *s, u32 len) {
+    for (u32 i = 0; i < len; i++) com1.putc(s[i]);
+}

@@ -8,9 +8,11 @@
 #include "lib/heap.h"
 #include "lib/ports.h"
 
-/* File descriptor: single-open for now */
-static u8  *f_buf = nullptr;
-static u32  f_size = 0;
+#define MAX_FD 4
+
+/* File descriptor table */
+static u8  *fd_buf[MAX_FD] = {nullptr};
+static u32  fd_size[MAX_FD] = {0};
 
 /* Heap break — starts at 0x10000000 (PDE 64, clear of kernel PDEs) */
 static u32 user_break = 0x10000000;
@@ -18,25 +20,19 @@ static u32 user_break = 0x10000000;
 static void sys_write(registers_t *r) {
     char *str = (char *)r->ebx;
     u32 len = r->ecx;
-    for (u32 i = 0; i < len; i++) {
-        for (volatile int t = 0; t < 10000000; t++)
-            if (inb(0x3FD) & 0x20) break;
-        outb(0x3F8, (u8)str[i]);
-    }
-    for (volatile int t = 0; t < 10000000; t++)
-        if (inb(0x3FD) & 0x20) break;
-    outb(0x3F8, '\n');
+    if (!str || len > 4096) { r->eax = (u32)-1; return; }
+    serial_write_str_len(str, len);
+    serial_write_char('\n');
     r->eax = len;
 }
 
 static void sys_read(registers_t *r) {
     char *buf = (char *)r->ebx;
     int max = (int)r->ecx;
-    if (max <= 0 || !buf) { r->eax = 0; return; }
+    if (max <= 0 || max > 4096 || !buf) { r->eax = 0; return; }
     kb_readline(buf, max - 1);
     buf[max - 1] = 0;
-    int n = 0;
-    while (buf[n]) n++;
+    int n = 0; while (buf[n]) n++;
     r->eax = n;
 }
 
@@ -44,18 +40,22 @@ static void sys_open(registers_t *r) {
     const char *name = (const char *)r->ebx;
     if (!name) { r->eax = (u32)-1; return; }
 
-    /* Free previous file if any */
-    if (f_buf) { kfree(f_buf); f_buf = nullptr; f_size = 0; }
+    /* Find free fd slot */
+    int fd = -1;
+    for (int i = 0; i < MAX_FD; i++) {
+        if (!fd_buf[i]) { fd = i; break; }
+    }
+    if (fd < 0) { r->eax = (u32)-1; return; }
 
-    /* Allocate buffer and read file */
-    f_buf = (u8 *)kmalloc(65536);
-    if (!f_buf) { r->eax = (u32)-1; return; }
+    u8 *fb = (u8 *)kmalloc(65536);
+    if (!fb) { r->eax = (u32)-1; return; }
 
-    int sz = fat_read_file_buf(name, f_buf, 65536);
-    if (sz <= 0) { kfree(f_buf); f_buf = nullptr; r->eax = (u32)-1; return; }
+    int sz = fat_read_file_buf(name, fb, 65536);
+    if (sz <= 0) { kfree(fb); r->eax = (u32)-1; return; }
 
-    f_size = (u32)sz;
-    r->eax = 0;  /* fd 0 */
+    fd_buf[fd] = fb;
+    fd_size[fd] = (u32)sz;
+    r->eax = fd;
 }
 
 static void sys_fread(registers_t *r) {
@@ -63,9 +63,10 @@ static void sys_fread(registers_t *r) {
     char *buf = (char *)r->ecx;
     u32 len = r->edx;
 
-    if (fd != 0 || !f_buf || !buf) { r->eax = (u32)-1; return; }
-    if (len > f_size) len = f_size;
-    for (u32 i = 0; i < len; i++) buf[i] = f_buf[i];
+    if (fd >= MAX_FD || !fd_buf[fd] || !buf) { r->eax = (u32)-1; return; }
+    if (len > fd_size[fd]) len = fd_size[fd];
+    if (len > 4096) len = 4096;
+    for (u32 i = 0; i < len; i++) buf[i] = fd_buf[fd][i];
     r->eax = len;
 }
 
@@ -73,7 +74,6 @@ static void sys_sbrk(registers_t *r) {
     u32 bytes = r->ebx;
     if (bytes == 0) { r->eax = user_break; return; }
 
-    /* Page-align the request upward */
     u32 pages = (bytes + 0xFFF) / 0x1000;
     u32 old_break = user_break;
 
@@ -82,7 +82,6 @@ static void sys_sbrk(registers_t *r) {
     for (u32 i = 0; i < pages; i++) {
         u32 phys = mm_alloc_page();
         if (!phys) { r->eax = (u32)-1; return; }
-        /* Map into user page directory */
         g_user_pd->map_page(user_break, phys, PT_FLAGS);
         user_break += 0x1000;
     }
@@ -93,7 +92,7 @@ static void sys_sbrk(registers_t *r) {
 static void sys_getcwd(registers_t *r) {
     char *buf = (char *)r->ebx;
     int max = (int)r->ecx;
-    if (!buf || max <= 0) { r->eax = (u32)-1; return; }
+    if (!buf || max <= 0 || max > 256) { r->eax = (u32)-1; return; }
     fat.cwd_str(buf, max);
     int n = 0; while (buf[n]) n++;
     r->eax = n;
@@ -102,7 +101,6 @@ static void sys_getcwd(registers_t *r) {
 static void sys_time(registers_t *r) {
     char *buf = (char *)r->ebx;
     if (!buf) { r->eax = (u32)-1; return; }
-    /* Read CMOS RTC: seconds at 0x00, minutes at 0x02, hours at 0x04 */
     auto bcd = [](u8 v) -> u8 { return ((v >> 4) & 0x0F) * 10 + (v & 0x0F); };
     outb(0x70, 0x04); u8 h = bcd(inb(0x71));
     outb(0x70, 0x02); u8 m = bcd(inb(0x71));
@@ -129,7 +127,9 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_TIME:  sys_time(r);  break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
-        if (f_buf) { kfree(f_buf); f_buf = nullptr; f_size = 0; }
+        for (int i = 0; i < MAX_FD; i++) {
+            if (fd_buf[i]) { kfree(fd_buf[i]); fd_buf[i] = nullptr; fd_size[i] = 0; }
+        }
         __asm__ volatile(
             "mov %0, %%esp\n"
             "pop %%ebp\n"

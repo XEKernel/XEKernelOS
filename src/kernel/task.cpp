@@ -67,12 +67,14 @@ int task_create(void (*entry)(void *), void *arg) {
 }
 
 int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
+    __asm__ volatile("movb $'T', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     struct task_struct *t = (task_struct *)kmalloc(sizeof(struct task_struct));
-    if (!t) return -1;
+    if (!t) { __asm__ volatile("movb $'1', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al"); return -1; }
 
-    /* Allocate kernel stack for syscall/exception handling */
+    __asm__ volatile("movb $'K', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     u32 *kstack = (u32 *)kmalloc(4096);
-    if (!kstack) { kfree(t); return -1; }
+    if (!kstack) { __asm__ volatile("movb $'2', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al"); kfree(t); return -1; }
+    __asm__ volatile("movb $'S', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     for (int i = 0; i < 1024; i++) kstack[i] = 0xCCCCCCCC;
 
     /* The kernel stack top: when entering from ring3 via interrupt,
@@ -116,15 +118,16 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     list_add_tail(&t->list, &ready_queue);
 
     current_task = t;
+    __asm__ volatile("movb $'U', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     return t->pid;
 }
 
 void task_start_user(void) {
     if (!current_task || !current_task->paging) return;
 
-    /* Build the ring-3 iret frame on the kernel stack FIRST,
-       while still using the kernel CR3.  After we load the user
-       page directory, we MUST NOT touch any kernel data. */
+    __asm__ volatile("movb $'>', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+
+    /* Build the ring-3 iret frame on the kernel stack */
     u32 *sp = (u32 *)(current_task->kernel_stack + 4096);
     *(--sp) = 0x23;                        // SS (user data)
     *(--sp) = current_task->user_stack;    // ESP
@@ -132,11 +135,7 @@ void task_start_user(void) {
     *(--sp) = 0x2B;                        // CS (user code, RPL=3)
     *(--sp) = current_task->eip;           // EIP
 
-    serial_write_char('>');
-
-    /* Load user page directory — from here on, only the stack
-       frame and inline asm are mapped (kernel 4MB PDEs cloned
-       into user PD). */
+    /* Load user page directory */
     current_task->paging->load();
 
     __asm__ volatile(

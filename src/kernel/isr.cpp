@@ -30,7 +30,7 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     if (vec == 0x80) {
         syscall_handler(r);
-        return;
+        /* fall through to CR3 restore at end */
     }
 
     if (vec == 0x20) {

@@ -80,7 +80,9 @@ int load_elf(const char *path) {
     }
 
     gfx_puts("Running ELF program...\n");
+    __asm__ volatile("movb $'L', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     task_create_user((void *)entry, USER_STACK_TOP, user_pd);
+    __asm__ volatile("movb $'U', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     task_start_user();
     return 0;
 }

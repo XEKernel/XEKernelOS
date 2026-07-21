@@ -51,7 +51,7 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
     static const char hex[] = "0123456789ABCDEF";
     for (int i = 28; i >= 0; i -= 4)
         serial_write_char(hex[(entry >> i) & 15]);
-    serial_write_str("\n");
+    serial_write_char('\n');
 
     if (ehdr->e_phoff == 0 || ehdr->e_phnum == 0) {
         serial_write_str("elf: no program headers\n");

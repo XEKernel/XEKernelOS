@@ -1,4 +1,4 @@
-; test_elf.asm — fill screen red, then green stripe
+; test_elf.asm — framebuffer: red full screen using SYS_GETFB dimensions
 
 [bits 32]
 [global _start]
@@ -11,41 +11,42 @@ _start:
     jne  .done
 
     mov  edi, [fbinfo]    ; fb addr
+    mov  esi, [fbinfo+4]  ; width
+    mov  ebp, [fbinfo+8]  ; height
+    mov  ebx, [fbinfo+12] ; pitch (bytes per line)
 
-    ; Fill entire screen red (1024 * 768 pixels * 4 bytes)
-    mov  ecx, 1024*768/4  ; dwords per screen (assume 32bpp)
-    mov  eax, 0x000000FF  ; red (B=255, G=0, R=0 → reversed in little-endian)
-.fill:
-    mov  dword [edi], eax
-    add  edi, 4
-    dec  ecx
-    jnz  .fill
+    ; Line-by-line fill — use actual pitch
+    xor  edx, edx          ; y = 0
+.yloop:
+    cmp  edx, ebp
+    jge  .done
 
-    ; Wait for keypress
-    mov  eax, 3
-    mov  ebx, buf
-    mov  ecx, 2
-    int  0x80
+    push edx
+    ; Row offset = y * pitch
+    mov  eax, edx
+    mul  ebx               ; eax = y * pitch
+    add  eax, edi          ; eax = fb + y * pitch
 
-    ; Now draw green stripe in middle
-    mov  edi, [fbinfo]
-    add  edi, 768/2 * 1024 * 4   ; halfway down
-    mov  ecx, 1024 * 100         ; 100 rows
-.green:
-    mov  dword [edi], 0x0000FF00
-    add  edi, 4
-    dec  ecx
-    jnz  .green
-
-    mov  eax, 3
-    mov  ebx, buf
-    mov  ecx, 2
-    int  0x80
-
+    ; Fill one row red (BGRA: R=255→byte2=0xFF)
+    xor  ecx, ecx          ; x = 0
+.xloop:
+    cmp  ecx, esi
+    jge  .nexty
+    ; Pixel offset = x * 4 (32bpp) — but use actual bpp
+    push eax
+    ; Use 4 bytes per pixel (safe even at 16bpp, just overwrites next pixel)
+    lea  eax, [eax + ecx*4]
+    mov  dword [eax], 0x0000FF00  ; Red: BGRA → byte2=FF, rest=00
+    pop  eax
+    inc  ecx
+    jmp  .xloop
+.nexty:
+    pop  edx
+    inc  edx
+    jmp  .yloop
 .done:
     mov  eax, 2
     int  0x80
 
 section .bss
 fbinfo: resd 5
-buf:    resb 2

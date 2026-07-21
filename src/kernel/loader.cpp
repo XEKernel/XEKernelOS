@@ -54,6 +54,7 @@ static int load_bin_task(const char *path) {
     gfx_puts("Running user program...\n");
 
     task_create_user((void *)USER_LOAD_ADDR, USER_STACK_TOP, user_pd);
+    task_start_user();
     return 0;
 }
 
@@ -76,6 +77,7 @@ int load_elf(const char *path) {
 
     gfx_puts("Running ELF program...\n");
     task_create_user((void *)entry, USER_STACK_TOP, user_pd);
+    task_start_user();
     return 0;
 }
 

@@ -115,7 +115,32 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->user_stack = user_stack_top;
     list_add_tail(&t->list, &ready_queue);
 
+    current_task = t;
     return t->pid;
+}
+
+void task_start_user(void) {
+    if (!current_task || !current_task->paging) return;
+
+    /* Load user page directory */
+    current_task->paging->load();
+
+    /* Build ring-3 iret frame on kernel stack:
+       The CPU will pop: SS, ESP, EFLAGS, CS, EIP (cross-privilege iretd) */
+    u32 *sp = (u32 *)(current_task->kernel_stack + 4096);
+    *(--sp) = 0x23;                        // SS (user data)
+    *(--sp) = current_task->user_stack;    // ESP
+    *(--sp) = 0x202;                       // EFLAGS (IF set)
+    *(--sp) = 0x2B;                        // CS (user code, RPL=3)
+    *(--sp) = current_task->eip;           // EIP
+
+    __asm__ volatile(
+        "mov %0, %%esp\n"
+        "iret\n"
+        :
+        : "r"(sp)
+    );
+    __builtin_unreachable();
 }
 
 void task_exit(void) {

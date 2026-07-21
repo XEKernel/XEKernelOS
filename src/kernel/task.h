@@ -31,6 +31,7 @@ extern struct task_struct *current_task;
 void task_init(void);
 int  task_create(void (*entry)(void *), void *arg);
 int  task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd);
+void task_start_user(void);   /* switch to user mode via direct iretd */
 void task_exit(void);
 void task_yield(void);
 void schedule(registers_t *r);

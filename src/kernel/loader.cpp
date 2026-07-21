@@ -85,7 +85,8 @@ static int load_elf_binary(const char *path) {
     for (u16 i = 0; i < ehdr->e_phnum; i++) {
         Elf32_Phdr *ph = &phdrs[i];
         if (ph->p_type != 1) continue;
-        if (!(ph->p_flags & 1)) continue;
+        /* Skip read-only shadow segments (PHDR), keep W or X ones */
+        if (!(ph->p_flags & 3)) continue;  /* 3 = PF_W | PF_X */
 
         serial_write_str("elf: segment vaddr=0x");
         for (int j = 28; j >= 0; j -= 4) serial_write_char(hex[(ph->p_vaddr >> j) & 15]);

@@ -2,6 +2,7 @@
 #include "kernel/user.h"
 #include "kernel/paging.h"
 #include "drivers/serial.h"
+#include "drivers/keyboard.h"
 #include "lib/ports.h"
 
 static void sys_write(registers_t *r) {
@@ -18,6 +19,19 @@ static void sys_write(registers_t *r) {
     r->eax = len;
 }
 
+static void sys_read(registers_t *r) {
+    char *buf = (char *)r->ebx;
+    int max = (int)r->ecx;
+    if (max <= 0 || !buf) { r->eax = 0; return; }
+    /* kb_readline blocks until Enter, echoes to VGA, null-terminates */
+    kb_readline(buf, max - 1);
+    buf[max - 1] = 0;
+    /* Count chars (exclude null) */
+    int n = 0;
+    while (buf[n]) n++;
+    r->eax = n;
+}
+
 extern "C" void syscall_handler(registers_t *r) {
     __asm__ volatile("movb $'[', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     char c = '0' + (r->eax % 10);
@@ -28,15 +42,15 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_WRITE:
         sys_write(r);
         break;
+    case SYS_READ:
+        sys_read(r);
+        break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
-        /* g_entry_esp = saved EBP.  Frame layout:
-           [EBP+4] = return addr, [EBP] = old EBP.
-           Restore EBP, ESP → pop return addr → ret → shell. */
         __asm__ volatile(
-            "mov %0, %%esp\n"    /* ESP = saved EBP */
-            "pop %%ebp\n"        /* restore old EBP, ESP → EBP+4 */
-            "ret\n"              /* pop return addr, jump */
+            "mov %0, %%esp\n"
+            "pop %%ebp\n"
+            "ret\n"
             :
             : "m"(g_entry_esp)
         );

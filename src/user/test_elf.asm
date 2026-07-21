@@ -1,4 +1,4 @@
-; test_elf.asm — minimal framebuffer test: one red pixel at (0,0)
+; test_elf.asm — fill screen red, then green stripe
 
 [bits 32]
 [global _start]
@@ -10,25 +10,33 @@ _start:
     cmp  eax, 5
     jne  .done
 
-    ; Write red pixel at (0,0): B=0 G=0 R=255
-    mov  esi, [fbinfo]
-    mov  dword [esi], 0x000000FF
+    mov  edi, [fbinfo]    ; fb addr
 
-    ; Also write at (100,100) via pitch
-    mov  edx, [fbinfo+12]  ; pitch
-    imul edx, 100
-    add  edx, esi
-    add  edx, 400          ; 100 pixels * 4 bytes
-    mov  dword [edx], 0x0000FF00  ; green
-
-    ; And a blue line across top
-    mov  ecx, 200
-.topline:
-    mov  dword [esi+ecx*4], 0x00FF0000  ; blue
+    ; Fill entire screen red (1024 * 768 pixels * 4 bytes)
+    mov  ecx, 1024*768/4  ; dwords per screen (assume 32bpp)
+    mov  eax, 0x000000FF  ; red (B=255, G=0, R=0 → reversed in little-endian)
+.fill:
+    mov  dword [edi], eax
+    add  edi, 4
     dec  ecx
-    jnz  .topline
+    jnz  .fill
 
-    ; Wait for keypress (SYS_READ), then exit
+    ; Wait for keypress
+    mov  eax, 3
+    mov  ebx, buf
+    mov  ecx, 2
+    int  0x80
+
+    ; Now draw green stripe in middle
+    mov  edi, [fbinfo]
+    add  edi, 768/2 * 1024 * 4   ; halfway down
+    mov  ecx, 1024 * 100         ; 100 rows
+.green:
+    mov  dword [edi], 0x0000FF00
+    add  edi, 4
+    dec  ecx
+    jnz  .green
+
     mov  eax, 3
     mov  ebx, buf
     mov  ecx, 2

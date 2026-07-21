@@ -132,6 +132,8 @@ void task_start_user(void) {
     *(--sp) = 0x2B;                        // CS (user code, RPL=3)
     *(--sp) = current_task->eip;           // EIP
 
+    serial_write_char('>');
+
     /* Load user page directory — from here on, only the stack
        frame and inline asm are mapped (kernel 4MB PDEs cloned
        into user PD). */

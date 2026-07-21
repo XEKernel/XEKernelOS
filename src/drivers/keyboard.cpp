@@ -67,6 +67,13 @@ char Keyboard::getchar() {
         if (s <= 1) continue;
         int shifted = shift_ ^ caps_;
         char c = shifted ? kbd_up_[s] : kbd_low_[s];
+        /* CapsLock only inverts case for letters; for punctuation
+           and other keys it has no effect. */
+        if (caps_ && c) {
+            char lo = kbd_low_[s];
+            if (!((lo >= 'a' && lo <= 'z') || (lo >= 'A' && lo <= 'Z')))
+                c = shift_ ? kbd_up_[s] : kbd_low_[s];
+        }
         if (c) return c;
     }
 }

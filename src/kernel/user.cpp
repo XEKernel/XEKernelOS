@@ -72,14 +72,57 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd) {
     *(--sp) = entry;       /* EIP = user code entry */
 
     /* Load user page directory */
+    __asm__ volatile("movb $'P', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+    {
+        u32 p = pd->get_page_dir_phys();
+        for (int s = 28; s >= 0; s -= 4) {
+            char c = "0123456789ABCDEF"[(p >> s) & 15];
+            __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(c) : "dx","al");
+        }
+    }
     pd->load();
+    /* Extra full TLB flush — belt and suspenders */
+    __asm__ volatile("mov %%cr3, %%eax; mov %%eax, %%cr3" ::: "eax", "memory");
 
-    /* Verify user code page is accessible */
-    volatile u8 v = *(volatile u8 *)entry;
+    /* Verify by reading the physical page directly via identity mapping.
+       Get physical address from the user page directory's PDE/PTE. */
+    {
+        u32 *user_pd_virt = (u32 *)pd->get_page_dir_phys();
+        u32 pde = user_pd_virt[32];  /* 0x08000000 >> 22 = 32 */
+        /* Output PDE as 8 hex digits */
+        __asm__ volatile("movb $'R', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+        for (int s = 28; s >= 0; s -= 4) {
+            char c = "0123456789ABCDEF"[(pde >> s) & 15];
+            __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(c) : "dx","al");
+        }
+        if (!(pde & 1)) {
+            __asm__ volatile("movb $'N', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+        } else if (pde & PAGE_PSE) {
+            __asm__ volatile("movb $'B', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+        } else {
+            u32 *pt = (u32 *)(pde & 0xFFFFF000);
+            u32 pte = pt[0];
+            __asm__ volatile("movb $'T', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+            for (int s = 28; s >= 0; s -= 4) {
+                char c = "0123456789ABCDEF"[(pte >> s) & 15];
+                __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(c) : "dx","al");
+            }
+            u8 *code = (u8 *)(pte & 0xFFFFF000);
+            u8 b = code[0];
+            char lo = "0123456789ABCDEF"[b & 15];
+            __asm__ volatile("movb $'X', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+            __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(lo) : "dx","al");
+        }
+    }
+
+    /* Force read via fixed register — no compiler alias shenanigans */
+    volatile u8 v;
+    __asm__ volatile("movb (%%eax), %%al" : "=a"(v) : "a"(entry) : "memory");
     __asm__ volatile("movb $'V', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
-    static const char hx[] = "0123456789ABCDEF";
-    __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(hx[(v>>4)&15]) : "dx","al");
-    __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(hx[v&15]) : "dx","al");
+    {
+        char lo = "0123456789ABCDEF"[v & 15];
+        __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(lo) : "dx","al");
+    }
 
     /* Debug: confirm we're about to iret */
     __asm__ volatile("movb $'E', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");

@@ -8,7 +8,7 @@
 #include "drivers/serial.h"
 #include "drivers/gfx.h"
 
-#define USER_LOAD_ADDR   0x08000000
+#define USER_LOAD_ADDR   0x10000000
 #define USER_STACK_TOP   0xB0000000
 #define USER_STACK_SIZE  0x1000
 

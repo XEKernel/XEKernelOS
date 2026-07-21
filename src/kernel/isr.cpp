@@ -2,6 +2,7 @@
 #include "kernel/panic.h"
 #include "kernel/task.h"
 #include "kernel/paging.h"
+#include "kernel/user.h"
 #include "kernel/syscall.h"
 #include "drivers/gfx.h"
 #include "drivers/keyboard.h"
@@ -91,14 +92,9 @@ extern "C" void c_isr_handler(registers_t *r) {
         kernel_panic(r, n);
     }
 
-    /* CR3 exit: restore user page table if returning to user mode.
-       If schedule() was called, it already loaded the correct CR3 via the
-       new task. If not, we need to restore the user's CR3 here. */
-    if (from_user && current_task && current_task->paging) {
-        /* Mask ALL slave PIC IRQs (0xA1) to prevent unhandled
-           spurious interrupts (IRQ15 from IDE, etc.) from
-           endlessly preempting user code. */
-        outb(0xA1, 0xFF);
-        current_task->paging->load();
+    /* Restore user page directory before returning to ring 3 */
+    if (from_user && g_user_pd) {
+        outb(0xA1, 0xFF);          /* mask all slave PIC IRQs */
+        g_user_pd->load();
     }
 }

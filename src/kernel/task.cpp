@@ -132,7 +132,7 @@ void task_start_user(void) {
     u32 *sp = (u32 *)(current_task->kernel_stack + 4096);
     *(--sp) = 0x23;                        // SS (user data)
     *(--sp) = current_task->user_stack;    // ESP
-    *(--sp) = 0x202;                       // EFLAGS (IF set)
+    *(--sp) = 0x002;                       // EFLAGS (IF=0, no hw interrupts)
     *(--sp) = 0x2B;                        // CS (user code, RPL=3)
     *(--sp) = current_task->eip;           // EIP
 

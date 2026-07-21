@@ -1,10 +1,15 @@
-; test_elf.asm — minimal ELF user program for XEKernelOS
+; test_elf.asm — ELF user program with direct I/O debug
 
 [bits 32]
 [global _start]
 
 _start:
-    ; SYS_WRITE(1): eax=1, ebx=str, ecx=len
+    ; Direct serial output — now allowed by TSS I/O bitmap
+    mov  dx, 0x3F8
+    mov  al, 'X'
+    out  dx, al
+
+    ; SYS_WRITE via int 0x80
     mov  eax, 1
     mov  ebx, msg
     mov  ecx, msg_len
@@ -12,5 +17,5 @@ _start:
 
     jmp  $
 
-msg:     db "Hello from ELF user program!", 0
+msg:     db "Hello from ELF!", 0
 msg_len  equ $ - msg

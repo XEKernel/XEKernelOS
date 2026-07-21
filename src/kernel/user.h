@@ -1,5 +1,9 @@
 #pragma once
 #include "lib/types.h"
 
+class PagingManager;
 void user_init(void);
-void user_run(void (*entry)(void));
+void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd);
+
+/* Set by enter_user_mode, read by ISR for CR3 restore */
+extern PagingManager *g_user_pd;

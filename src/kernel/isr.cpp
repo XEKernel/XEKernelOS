@@ -20,21 +20,6 @@ extern "C" void syscall_handler(registers_t *r);
 extern "C" void c_isr_handler(registers_t *r) {
     int vec = r->vec;
 
-    /* Identify interrupt source */
-    if (vec == 0x80)
-        __asm__ volatile("movb $'S', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
-    else if (vec == 0x20)
-        __asm__ volatile("movb $'T', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
-    else {
-        static const char hx[] = "0123456789ABCDEF";
-        char hi = hx[(vec >> 4) & 0xF];
-        char lo = hx[vec & 0xF];
-        __asm__ volatile("movb $'!', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
-        __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(hi) : "dx","al");
-        __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(lo) : "dx","al");
-    }
-
-    /* CR3 protection: if came from user mode, switch to kernel page table */
     int from_user = ((r->cs & 3) == 3);
     if (from_user) {
         PagingManager::get_kernel_paging()->load();
@@ -45,7 +30,6 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     if (vec == 0x80) {
         syscall_handler(r);
-        /* fall through to CR3 restore at end */
     }
 
     if (vec == 0x20) {
@@ -92,9 +76,8 @@ extern "C" void c_isr_handler(registers_t *r) {
         kernel_panic(r, n);
     }
 
-    /* Restore user page directory before returning to ring 3 */
     if (from_user && g_user_pd) {
-        outb(0xA1, 0xFF);          /* mask all slave PIC IRQs */
+        outb(0xA1, 0xFF);
         g_user_pd->load();
     }
 }

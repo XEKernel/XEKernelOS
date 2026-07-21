@@ -15,20 +15,17 @@ _start:
     mov  ebp, [fbinfo+8]  ; height
     mov  ebx, [fbinfo+12] ; pitch (bytes per line)
 
-    ; Line-by-line fill — use actual pitch
+    ; Line-by-line — use width*4 as pitch (VBE pitch=40 is wrong)
     xor  edx, edx          ; y = 0
 .yloop:
     cmp  edx, ebp
     jge  .done
-
     push edx
-    ; Row offset = y * pitch
     mov  eax, edx
-    mul  ebx               ; eax = y * pitch
-    add  eax, edi          ; eax = fb + y * pitch
-
-    ; Fill one row red (BGRA: R=255→byte2=0xFF)
-    xor  ecx, ecx          ; x = 0
+    shl  eax, 2            ; x4
+    mul  esi               ; eax = y * width * 4 (row byte offset)
+    add  eax, edi
+    xor  ecx, ecx
 .xloop:
     cmp  ecx, esi
     jge  .nexty
@@ -36,7 +33,7 @@ _start:
     push eax
     ; Use 4 bytes per pixel (safe even at 16bpp, just overwrites next pixel)
     lea  eax, [eax + ecx*4]
-    mov  dword [eax], 0x0000FF00  ; Red: BGRA → byte2=FF, rest=00
+    mov  dword [eax], 0x00FF0000  ; Red: BGRA byte2=FF
     pop  eax
     inc  ecx
     jmp  .xloop

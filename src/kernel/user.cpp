@@ -5,6 +5,7 @@
 
 static u32 tss_page;
 PagingManager *g_user_pd = nullptr;
+u32 g_entry_esp = 0;
 
 void user_init(void) {
     tss_page = mm_alloc_page();
@@ -28,11 +29,12 @@ void user_init(void) {
 }
 
 void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd) {
-    (void)pd;  /* not used — keep kernel CR3 */
-    (void)stack_top;  /* not used — use kernel stack area */
+    (void)pd;
+    (void)stack_top;
 
-    /* Original user_run-style: push iret frame, iret to ring 3.
-       Uses kernel CR3 — kernel PDEs now include PAGE_USER (0x87). */
+    /* Save kernel ESP so SYS_EXIT can restore shell context */
+    __asm__ volatile("mov %%esp, %0" : "=m"(g_entry_esp));
+
     __asm__ volatile(
         "pushl $0x23\n"
         "pushl $0x9E000\n"

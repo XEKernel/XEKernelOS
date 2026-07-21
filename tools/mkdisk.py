@@ -91,41 +91,55 @@ def build_disk(output_path):
     current_cluster = 2  # first data cluster
     root_dir = bytearray(ROOT_SECTORS * BPS)
 
+    def set_fat_entry(cl, value):
+        """Write a 12-bit FAT entry for cluster cl."""
+        off = cl + cl // 2
+        if cl & 1:
+            # Odd cluster: upper 12 bits of the 16-bit word
+            old = fat[off]
+            fat[off] = (old & 0x0F) | ((value & 0x0F) << 4)
+            fat[off + 1] = (value >> 4) & 0xFF
+        else:
+            # Even cluster: lower 12 bits
+            fat[off] = value & 0xFF
+            fat[off + 1] = (fat[off + 1] & 0xF0) | ((value >> 8) & 0x0F)
+
     for name_str, content_bytes in DEMO_FILES:
         name_bytes = name_to_83(name_str)
         size = len(content_bytes)
 
-        # Write file data
-        data_offset = (DATA_SEC + (current_cluster - 2) * SPC) * BPS
-        img[data_offset: data_offset + size] = content_bytes
+        # Number of clusters needed
+        cluster_size = SPC * BPS
+        num_clusters = (size + cluster_size - 1) // cluster_size
 
-        # Mark cluster as end-of-chain in FAT
-        fat_entry_offset = current_cluster + current_cluster // 2
-        fat_byte_offset = fat_entry_offset
-        if current_cluster & 1:
-            fat[fat_byte_offset] |= 0xF0
-            fat[fat_byte_offset + 1] = 0xFF
-        else:
-            fat[fat_byte_offset] = 0xFF
-            fat[fat_byte_offset + 1] = 0x0F
+        # Allocate cluster chain
+        start_cluster = current_cluster
+        prev_cluster = 0
+        for i in range(num_clusters):
+            cl = current_cluster
+            if prev_cluster:
+                set_fat_entry(prev_cluster, cl)
+            prev_cluster = cl
+            current_cluster += 1
+        set_fat_entry(prev_cluster, 0xFFF)  # end of chain
 
-        # Also update fat2
-        img[RESERVED * BPS + fat_byte_offset] = fat[fat_byte_offset]
-        img[RESERVED * BPS + fat_byte_offset + 1] = fat[fat_byte_offset + 1]
-        img[(RESERVED + FAT_SIZE) * BPS + fat_byte_offset] = fat[fat_byte_offset]
-        img[(RESERVED + FAT_SIZE) * BPS + fat_byte_offset + 1] = fat[fat_byte_offset + 1]
+        # Write file data across allocated clusters
+        data_base = DATA_SEC * BPS
+        for i, off in enumerate(range(0, size, cluster_size)):
+            cl = start_cluster + i
+            cl_off = (cl - 2) * cluster_size
+            chunk = content_bytes[off: off + cluster_size]
+            img[data_base + cl_off: data_base + cl_off + len(chunk)] = chunk
 
         # Create root directory entry
-        entry_idx = current_cluster - 2  # simple mapping
+        entry_idx = start_cluster - 2  # simple mapping
         entry_offset = entry_idx * 32
         entry = bytearray(32)
         entry[0:11] = name_bytes
         entry[11] = 0x20  # archive attribute
-        struct.pack_into('<H', entry, 26, current_cluster)
+        struct.pack_into('<H', entry, 26, start_cluster)
         struct.pack_into('<I', entry, 28, size)
         root_dir[entry_offset: entry_offset + 32] = entry
-
-        current_cluster += 1
 
     # Write root directory
     img[ROOT_SEC * BPS: ROOT_SEC * BPS + len(root_dir)] = root_dir

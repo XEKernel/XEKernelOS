@@ -4,6 +4,7 @@
 #include "lib/heap.h"
 #include "fs/fat12.h"
 #include "drivers/serial.h"
+#include "drivers/serial.h"
 
 u32 ElfLoader::load(const char *path, PagingManager *paging) {
     /* Read entire ELF into a buffer (max 64KB for now) */
@@ -61,6 +62,14 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
 
     Elf32_Phdr *phdrs = (Elf32_Phdr *)(elf_buf + ehdr->e_phoff);
 
+    /* DEBUG: verify elf_buf has data at 0x1000 */
+    {
+        u8 b = elf_buf[0x1000];
+        __asm__ volatile("movb $'D', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+        char lo = "0123456789ABCDEF"[b & 15];
+        __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(lo) : "dx","al");
+    }
+
     for (u16 i = 0; i < ehdr->e_phnum; i++) {
         Elf32_Phdr *ph = &phdrs[i];
         if (ph->p_type != PT_LOAD) continue;
@@ -101,6 +110,9 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
                     u8 *dst = (u8 *)phys;
                     for (u32 k = 0; k < copy_len; k++)
                         dst[k] = elf_buf[copy_start + k];
+                    serial_write_char(dst[0] ? 'C' : 'Z');
+                } else {
+                    serial_write_str("elf: copy skipped\n");
                 }
             }
 

@@ -74,6 +74,13 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd) {
     /* Load user page directory */
     pd->load();
 
+    /* Verify user code page is accessible */
+    volatile u8 v = *(volatile u8 *)entry;
+    __asm__ volatile("movb $'V', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+    static const char hx[] = "0123456789ABCDEF";
+    __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(hx[(v>>4)&15]) : "dx","al");
+    __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(hx[v&15]) : "dx","al");
+
     /* Debug: confirm we're about to iret */
     __asm__ volatile("movb $'E', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
 

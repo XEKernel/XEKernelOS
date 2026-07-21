@@ -30,6 +30,9 @@ public:
     /* Identity-map a 4MB region for kernel space */
     void map_kernel_4mb(u32 phys_addr);
 
+    /* Identity-map a 4MB region for user space (with PAGE_USER) */
+    void map_user_4mb(u32 virt_addr, u32 phys_addr);
+
 private:
     u32  page_dir_phys_;   /* physical address of page directory (4KB aligned) */
     u32 *page_dir_virt_;   /* virtual address (identity-mapped) */

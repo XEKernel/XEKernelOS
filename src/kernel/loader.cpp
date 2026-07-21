@@ -9,6 +9,7 @@
 #include "drivers/gfx.h"
 
 #define USER_LOAD_ADDR   0x10000000
+#define USER_LOAD_PHYS   0x01000000  /* physical 16MB, within QEMU 32MB */
 #define USER_STACK_TOP   0xB0000000
 #define USER_STACK_SIZE  0x1000
 
@@ -21,20 +22,22 @@ static int load_bin_task(const char *path) {
 
     PagingManager *user_pd = new PagingManager();
 
-    u32 code_pages = (sz + 0xFFF) / 0x1000;
-    for (u32 i = 0; i < code_pages; i++) {
-        u32 phys = mm_alloc_page();
-        u8 *dst  = (u8 *)phys;
-        u32 off  = i * 0x1000;
-        u32 len  = ((off + 0x1000) > (u32)sz) ? ((u32)sz - off) : 0x1000;
-        for (u32 j = 0; j < len; j++) dst[j] = buf[off + j];
-        user_pd->map_page(USER_LOAD_ADDR + off, phys, PT_FLAGS);
-    }
+    /* Copy code to physical 0x1000000 via identity mapping */
+    u8 *phys_dst = (u8 *)USER_LOAD_PHYS;
+    for (int i = 0; i < sz; i++) phys_dst[i] = buf[i];
     kfree(buf);
 
+    /* Map as 4MB PSE page with USER flag */
+    user_pd->map_user_4mb(USER_LOAD_ADDR, USER_LOAD_PHYS);
+
+    /* Map user stack with a 4KB page table (small, no PSE) */
     for (u32 i = 0; i < USER_STACK_SIZE / 0x1000; i++) {
         u32 phys = mm_alloc_page();
-        user_pd->map_page(USER_STACK_TOP - (i+1)*0x1000, phys, PT_FLAGS);
+        u32 virt = USER_STACK_TOP - (i+1)*0x1000;
+        /* Copy zeros — stack is initially empty */
+        u8 *s = (u8 *)phys;
+        for (u32 j = 0; j < 0x1000; j++) s[j] = 0;
+        user_pd->map_page(virt, phys, PT_FLAGS);
     }
 
     gfx_puts("Running user program...\n");
@@ -45,6 +48,7 @@ static int load_bin_task(const char *path) {
 int load_elf(const char *path) {
     PagingManager *user_pd = new PagingManager();
 
+    /* For ELF, we load to physical 0x1000000, 4MB PSE page */
     u32 entry = ElfLoader::load(path, user_pd);
     if (!entry) { delete user_pd; return -1; }
 

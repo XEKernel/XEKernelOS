@@ -29,11 +29,15 @@ void user_init(void) {
 }
 
 void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd) {
-    (void)pd;
     (void)stack_top;
 
-    /* Save EBP so SYS_EXIT can find the return address (at EBP+4) */
+    /* Save EBP for SYS_EXIT return-to-shell */
     __asm__ volatile("mov %%ebp, %0" : "=m"(g_entry_esp));
+
+    if (pd) {
+        g_user_pd = pd;
+        pd->load();  /* switch to user page directory */
+    }
 
     __asm__ volatile(
         "pushl $0x23\n"

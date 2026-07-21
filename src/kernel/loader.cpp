@@ -1,6 +1,7 @@
 #include "kernel/loader.h"
 #include "kernel/elf.h"
 #include "kernel/user.h"
+#include "kernel/paging.h"
 #include "lib/heap.h"
 #include "fs/fat12.h"
 #include "drivers/serial.h"
@@ -36,8 +37,9 @@ static int load_flat_binary(const char *path) {
     serial_write_char('0' + sz % 10);
     serial_write_str(" bytes)\n");
 
+    PagingManager *user_pd = new PagingManager();
     gfx_puts("Running user program...\n");
-    enter_user_mode(USER_LOAD_ADDR, 0, nullptr);
+    enter_user_mode(USER_LOAD_ADDR, 0, user_pd);
     gfx_putc('\n');
     return 0;
 }
@@ -102,8 +104,9 @@ static int load_elf_binary(const char *path) {
     }
 
     kfree(buf);
+    PagingManager *user_pd = new PagingManager();
     gfx_puts("Running ELF program...\n");
-    enter_user_mode(entry, 0, nullptr);
+    enter_user_mode(entry, 0, user_pd);
     gfx_putc('\n');
     return 0;
 }

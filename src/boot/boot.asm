@@ -174,6 +174,19 @@ real_start:
     int 0x13
     jc _err
 
+; load kernel part11 (LBA 101-106, 6 sectors) to 0x2A800
+    mov ah, 0x02
+    mov al, 6
+    mov ch, 3
+    mov cl, 3
+    mov dh, 0
+    mov dl, 0x00
+    push 0x2000
+    pop es
+    mov bx, 0xA800
+    int 0x13
+    jc _err
+
 ; jump to stage2
     jmp 0x1000:0x0000
 

@@ -2,3 +2,4 @@ build/
 *.ppm
 .workbuddy/
 1.txt
+__pycache__/

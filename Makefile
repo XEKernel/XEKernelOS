@@ -28,6 +28,7 @@ CXX_SRCS := $(SRCDIR)/kernel/kernel.cpp \
             $(SRCDIR)/kernel/syscall.cpp \
             $(SRCDIR)/kernel/task.cpp \
             $(SRCDIR)/kernel/loader.cpp \
+            $(SRCDIR)/kernel/elf.cpp \
             $(SRCDIR)/drivers/keyboard.cpp \
             $(SRCDIR)/drivers/pic.cpp \
             $(SRCDIR)/drivers/pit.cpp \

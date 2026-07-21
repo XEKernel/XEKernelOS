@@ -1,6 +1,7 @@
 #include "kernel/isr.h"
 #include "kernel/panic.h"
 #include "kernel/task.h"
+#include "kernel/paging.h"
 #include "drivers/gfx.h"
 #include "drivers/keyboard.h"
 #include "shell/shell.h"
@@ -16,6 +17,12 @@ extern "C" void syscall_handler(registers_t *r);
 
 extern "C" void c_isr_handler(registers_t *r) {
     int vec = r->vec;
+
+    /* CR3 protection: if came from user mode, switch to kernel page table */
+    int from_user = ((r->cs & 3) == 3);
+    if (from_user) {
+        PagingManager::get_kernel_paging()->load();
+    }
 
     void (*h)(void) = isr_mgr.lookup(vec);
     if (h) h();
@@ -62,5 +69,14 @@ extern "C" void c_isr_handler(registers_t *r) {
         };
         const char *n = (vec <= 20 && names[vec][0]) ? names[vec] : "?";
         kernel_panic(r, n);
+    }
+
+    /* CR3 exit: restore user page table if returning to user mode.
+       If schedule() was called, it already loaded the correct CR3 via the
+       new task. If not, we need to restore the user's CR3 here. */
+    if (from_user && current_task && current_task->paging) {
+        /* Only reload if schedule didn't already do it.
+           We reload unconditionally — it's fast and ensures correctness. */
+        current_task->paging->load();
     }
 }

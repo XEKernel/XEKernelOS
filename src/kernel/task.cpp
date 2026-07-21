@@ -1,4 +1,5 @@
 #include "kernel/task.h"
+#include "kernel/paging.h"
 #include "lib/heap.h"
 #include "drivers/serial.h"
 
@@ -19,6 +20,8 @@ void task_init(void) {
     main_task->pid = 0;
     main_task->state = TASK_RUNNING;
     main_task->kernel_stack = 0;
+    main_task->paging = PagingManager::get_kernel_paging();
+    main_task->user_stack = 0;
     current_task = main_task;
 }
 
@@ -33,7 +36,7 @@ int task_create(void (*entry)(void *), void *arg) {
     u32 *sp = stack + 1024;
 
     *(--sp) = 0x202;             // eflags
-    *(--sp) = 0x18;              // cs
+    *(--sp) = 0x18;              // cs (kernel code selector)
     *(--sp) = (u32)task_wrapper; // eip
     *(--sp) = 0;                 // err
     *(--sp) = 0x20;              // vec
@@ -56,6 +59,60 @@ int task_create(void (*entry)(void *), void *arg) {
     t->kernel_stack = (u32)stack;
     t->entry = entry;
     t->arg = arg;
+    t->paging = PagingManager::get_kernel_paging();
+    t->user_stack = 0;
+    list_add_tail(&t->list, &ready_queue);
+
+    return t->pid;
+}
+
+int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
+    struct task_struct *t = (task_struct *)kmalloc(sizeof(struct task_struct));
+    if (!t) return -1;
+
+    /* Allocate kernel stack for syscall/exception handling */
+    u32 *kstack = (u32 *)kmalloc(4096);
+    if (!kstack) { kfree(t); return -1; }
+    for (int i = 0; i < 1024; i++) kstack[i] = 0xCCCCCCCC;
+
+    /* The kernel stack top: when entering from ring3 via interrupt,
+       the CPU pushes SS, ESP, EFLAGS, CS, EIP onto this stack.
+       We set ESP0 in the TSS to point here. */
+    u32 *sp = kstack + 1024;
+
+    /* Build initial interrupt frame for returning to user mode via iretd.
+       The frame format from top to bottom:
+       SS, user_ESP, EFLAGS, CS, EIP, err=0, vec */
+    *(--sp) = 0x23;                 // SS (user data selector)
+    *(--sp) = user_stack_top;       // ESP
+    *(--sp) = 0x202;                // EFLAGS (IF set)
+    *(--sp) = 0x2B;                 // CS (user code selector)
+    *(--sp) = (u32)entry;           // EIP
+    *(--sp) = 0;                    // err_code
+    *(--sp) = 0x20;                 // vec (timer, will be overwritten)
+
+    /* pusha slots */
+    *(--sp) = 0;                    // eax
+    *(--sp) = 0;                    // ecx
+    *(--sp) = 0;                    // edx
+    *(--sp) = 0;                    // ebx
+    sp--;                           // _esp slot
+    *sp = (u32)(sp - 3);            // _esp → edi slot
+    *(--sp) = 0;                    // ebp
+    *(--sp) = 0;                    // esi
+    *(--sp) = 0;                    // edi
+
+    t->pid = next_pid++;
+    t->ecx = 0; t->edx = 0; t->ebx = 0; t->ebp = 0; t->esi = 0; t->edi = 0;
+    t->eip = (u32)entry;
+    t->esp = (u32)sp;
+    t->eflags = 0x202;
+    t->state = TASK_READY;
+    t->kernel_stack = (u32)kstack;
+    t->entry = nullptr;
+    t->arg = nullptr;
+    t->paging = user_pd;
+    t->user_stack = user_stack_top;
     list_add_tail(&t->list, &ready_queue);
 
     return t->pid;
@@ -64,8 +121,18 @@ int task_create(void (*entry)(void *), void *arg) {
 void task_exit(void) {
     current_task->state = TASK_DEAD;
     list_del(&current_task->list);
+
+    /* Free user page directory (not kernel's) */
+    if (current_task->paging && current_task->paging != PagingManager::get_kernel_paging()) {
+        delete current_task->paging;
+    }
+
     kfree((void *)current_task->kernel_stack);
     kfree(current_task);
+
+    /* Switch back to kernel page table */
+    PagingManager::get_kernel_paging()->load();
+
     for (;;) __asm__ volatile("hlt");
 }
 
@@ -110,6 +177,11 @@ void schedule(registers_t *r) {
     r->_esp = nt->esp;
     r->eflags = nt->eflags;
     r->eax = 0;
+
+    /* CR3 switch: load the new task's page directory */
+    if (nt->paging && nt->paging != current_task->paging) {
+        nt->paging->load();
+    }
 
     current_task = nt;
 }

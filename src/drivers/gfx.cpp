@@ -203,44 +203,34 @@ void GfxDriver::puts_utf8(const char *s) {
 }
 
 void GfxDriver::mcursor_restore() {
-    /* Restore saved pixels from previous cursor position */
+    int stride = w_ * 4;  /* actual stride, VBE pitch is wrong */
     for (int y = 0; y < cur_h_; y++) {
         int fy = cur_y_ + y;
         if (fy < 0 || fy >= h_) continue;
         for (int x = 0; x < cur_w_; x++) {
             int fx = cur_x_ + x;
             if (fx < 0 || fx >= w_) continue;
-            int off = fy * pitch_ + fx * (bpp_ / 8);
-            if (bpp_ >= 16) {
-                *(u32 *)(fb_ + off) = cur_save_[y * cur_w_ + x];
-            } else {
-                fb_[off] = (u8)cur_save_[y * cur_w_ + x];
-            }
+            int off = fy * stride + fx * 4;
+            *(u32 *)(fb_ + off) = cur_save_[y * cur_w_ + x];
         }
     }
 }
 
 void GfxDriver::mcursor_draw() {
-    /* Save pixels under cursor and draw a crosshair */
+    int stride = w_ * 4;  /* actual stride */
     int mx, my, mb;
     mouse_get(&mx, &my, &mb);
-    /* Clamp to screen */
     if (mx < 0) mx = 0; if (mx >= w_) mx = w_ - 1;
     if (my < 0) my = 0; if (my >= h_) my = h_ - 1;
     cur_x_ = mx - cur_w_ / 2;
     cur_y_ = my - cur_h_ / 2;
 
-    /* Crosshair pattern: 8x8 cross */
     static const u8 cross[8] = {
-        0b00011000,
-        0b00011000,
-        0b11111111,
-        0b11111111,
-        0b00011000,
-        0b00011000,
+        0b00011000, 0b00011000,
+        0b00011000, 0b00011000,
+        0b11111111, 0b11111111,
+        0b00011000, 0b00011000,
     };
-
-    u32 cursor_color = 0x00FFFFFF;  /* white crosshair */
 
     for (int y = 0; y < cur_h_; y++) {
         int fy = cur_y_ + y;
@@ -248,18 +238,11 @@ void GfxDriver::mcursor_draw() {
         for (int x = 0; x < cur_w_; x++) {
             int fx = cur_x_ + x;
             if (fx < 0 || fx >= w_) continue;
-            int off = fy * pitch_ + fx * (bpp_ / 8);
-
-            if (bpp_ >= 16) {
-                u32 *p = (u32 *)(fb_ + off);
-                cur_save_[y * cur_w_ + x] = *p;
-                if (cross[y] & (1 << x))
-                    *p = cursor_color;
-            } else {
-                cur_save_[y * cur_w_ + x] = fb_[off];
-                if (cross[y] & (1 << x))
-                    fb_[off] = 0x0F; /* palette white */
-            }
+            int off = fy * stride + fx * 4;
+            u32 *p = (u32 *)(fb_ + off);
+            cur_save_[y * cur_w_ + x] = *p;
+            if (cross[y] & (1 << x))
+                *p = 0x00FFFFFF;  /* white */
         }
     }
 }

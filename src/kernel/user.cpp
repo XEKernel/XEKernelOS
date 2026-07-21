@@ -13,7 +13,17 @@ void user_init(void) {
     *(u32 *)(tss + 4)  = 0x9F000;
     *(u32 *)(tss + 8)  = 0x10;
 
-    /* NO I/O bitmap modification — keep original TSS limit */
+    /* Update GDT TSS descriptor base to point to our allocated TSS */
+    struct { u16 limit; u32 base; } __attribute__((packed)) gdtr;
+    __asm__ volatile("sgdt %0" : "=m"(gdtr));
+    u8 *gdt = (u8 *)gdtr.base;
+    int idx = 6;  /* TSS selector 0x30 = index 6 */
+    u32 base = tss_page;
+    gdt[idx*8 + 2] = base & 0xFF;
+    gdt[idx*8 + 3] = (base >> 8) & 0xFF;
+    gdt[idx*8 + 4] = (base >> 16) & 0xFF;
+    gdt[idx*8 + 7] = (base >> 24) & 0xFF;
+
     __asm__ volatile("ltr %%ax" : : "a"(0x30));
 }
 

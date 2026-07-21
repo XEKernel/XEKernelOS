@@ -64,6 +64,9 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
     for (u16 i = 0; i < ehdr->e_phnum; i++) {
         Elf32_Phdr *ph = &phdrs[i];
         if (ph->p_type != PT_LOAD) continue;
+        /* Only load executable segments — skip PHDR/note/etc segments
+           that ld.lld places at the link base address (e.g., 0x400000) */
+        if (!(ph->p_flags & 1)) continue;  /* PF_X */
 
         u32 vaddr_start = ph->p_vaddr;
         u32 vaddr_end   = ph->p_vaddr + ph->p_memsz;

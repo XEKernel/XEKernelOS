@@ -4,6 +4,7 @@
 #include "kernel/mm.h"
 #include "drivers/serial.h"
 #include "drivers/keyboard.h"
+#include "drivers/gfx.h"
 #include "fs/fat12.h"
 #include "lib/heap.h"
 #include "lib/ports.h"
@@ -111,6 +112,18 @@ static void sys_time(registers_t *r) {
     r->eax = 8;
 }
 
+static void sys_getfb(registers_t *r) {
+    /* Fill user buffer with {fb_addr, w, h, pitch, bpp} (5 × u32) */
+    u32 *buf = (u32 *)r->ebx;
+    if (!buf) { r->eax = (u32)-1; return; }
+    buf[0] = (u32)gfx.fb_addr();
+    buf[1] = (u32)gfx.fb_width();
+    buf[2] = (u32)gfx.fb_height();
+    buf[3] = (u32)gfx.fb_pitch();
+    buf[4] = (u32)gfx.fb_bpp();
+    r->eax = 5;  /* number of u32 values written */
+}
+
 extern "C" void syscall_handler(registers_t *r) {
     __asm__ volatile("movb $'[', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     char c = '0' + (r->eax % 10);
@@ -125,6 +138,7 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_SBRK:  sys_sbrk(r);  break;
     case SYS_GETCWD: sys_getcwd(r); break;
     case SYS_TIME:  sys_time(r);  break;
+    case SYS_GETFB: sys_getfb(r); break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
         for (int i = 0; i < MAX_FD; i++) {

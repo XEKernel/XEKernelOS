@@ -25,7 +25,15 @@ public:
     static constexpr int FONT_H = 16;
     static constexpr int FONT_CN_W = 16;
 
-    GfxDriver() = default;
+    bool point_in_bounds(int x, int y) const
+        { return x >= 0 && x < w_ && y >= 0 && y < h_; }
+
+    /* Framebuffer info for user programs */
+    u8  *fb_addr() const { return fb_; }
+    int  fb_width()  const { return w_; }
+    int  fb_height() const { return h_; }
+    int  fb_pitch()  const { return pitch_; }
+    int  fb_bpp()    const { return bpp_; }
 
     void init();
     void clear(u8 color);

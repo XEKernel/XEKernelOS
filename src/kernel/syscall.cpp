@@ -8,11 +8,11 @@ static void sys_write(registers_t *r) {
     char *str = (char *)r->ebx;
     u32 len = r->ecx;
     for (u32 i = 0; i < len; i++) {
-        for (volatile int t = 0; t < 1000000; t++)
+        for (volatile int t = 0; t < 10000000; t++)
             if (inb(0x3FD) & 0x20) break;
         outb(0x3F8, (u8)str[i]);
     }
-    for (volatile int t = 0; t < 1000000; t++)
+    for (volatile int t = 0; t < 10000000; t++)
         if (inb(0x3FD) & 0x20) break;
     outb(0x3F8, '\n');
     r->eax = len;

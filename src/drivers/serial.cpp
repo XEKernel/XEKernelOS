@@ -13,7 +13,7 @@ void SerialPort::init() {
 }
 
 void SerialPort::putc(char c) {
-    for (volatile int i = 0; i < 1000000; i++)
+    for (volatile int i = 0; i < 10000000; i++)
         if (read_reg(5) & 0x20) break;
     write_reg(0, (u8)c);
 }

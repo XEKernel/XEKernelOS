@@ -38,6 +38,11 @@ add_text("DEMO    TXT", "XEKernelOS 演示文件\n==================\n\n创建�
 hello_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'hello.bin')
 if os.path.exists(hello_bin):
     add_binary("HELLO   BIN", hello_bin)
+
+# ELF test program
+test_elf = os.path.join(os.path.dirname(__file__), '..', 'build', 'test_elf.elf')
+if os.path.exists(test_elf):
+    add_binary("TEST_ELFELF", test_elf)
 else:
     print(f"Warning: {hello_bin} not found, skipping")
 

@@ -61,7 +61,11 @@ LDFLAGS = -m elf_i386
 
 .PHONY: all run clean
 
-all: $(IMG) $(HELLO_BIN)
+TEST_ELF_ASM = $(SRCDIR)/user/test_elf.asm
+TEST_ELF_O   = $(BLDDIR)/test_elf.o
+TEST_ELF     = $(BLDDIR)/test_elf.elf
+
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF)
 
 $(BOOT_BIN): $(BOOT_SRC) | $(BLDDIR)
 	$(NASM) -f bin $< -o $@
@@ -97,6 +101,13 @@ $(BLDDIR):
 $(HELLO_BIN): $(USER_ASM) | $(BLDDIR)
 	$(NASM) -f bin $< -o $@
 	@echo "  User hello: $$(wc -c < $@)B"
+
+$(TEST_ELF_O): $(TEST_ELF_ASM) | $(BLDDIR)
+	$(NASM) -f elf32 $< -o $@
+
+$(TEST_ELF): $(TEST_ELF_O)
+	$(LD) $(LDFLAGS) -Ttext=0x400000 $< -o $@
+	@echo "  ELF test: $$(wc -c < $@)B"
 
 run: $(IMG)
 	qemu-system-i386 -fda $< -hda $(BLDDIR)/disk.img -m 32

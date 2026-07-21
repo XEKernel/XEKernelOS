@@ -136,7 +136,9 @@ void task_start_user(void) {
     *(--sp) = current_task->eip;           // EIP
 
     /* Load user page directory */
+    __asm__ volatile("movb $'C', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     current_task->paging->load();
+    __asm__ volatile("movb $'R', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
 
     __asm__ volatile(
         "mov %0, %%esp\n"

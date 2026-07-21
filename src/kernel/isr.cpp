@@ -17,6 +17,7 @@ void IsrManager::register_handler(int vec, void (*fn)(void)) {
 extern "C" void syscall_handler(registers_t *r);
 
 extern "C" void c_isr_handler(registers_t *r) {
+    __asm__ volatile("movb $'!', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     int vec = r->vec;
 
     /* CR3 protection: if came from user mode, switch to kernel page table */

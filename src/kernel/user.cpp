@@ -74,6 +74,9 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd) {
     /* Load user page directory */
     pd->load();
 
+    /* Debug: confirm we're about to iret */
+    __asm__ volatile("movb $'E', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+
     /* Switch to frame and iret to ring 3 */
     __asm__ volatile(
         "mov %0, %%esp\n"

@@ -54,6 +54,7 @@ int load_elf(const char *path) {
     }
 
     gfx_puts("Running ELF program...\n");
+    __asm__ volatile("movb $'M', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     enter_user_mode(entry, USER_STACK_TOP, user_pd);
     return 0;
 }

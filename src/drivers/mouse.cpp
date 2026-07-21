@@ -49,18 +49,25 @@ void Mouse::irq_handler() {
 }
 
 void Mouse::init() {
+    /* Enable auxiliary PS/2 port */
     wait(1); outb(0x64, 0xA8);
+
+    /* Enable IRQ12 in PS/2 controller */
     wait(1); outb(0x64, 0x20);
-    u8 cmd = read();
+    u8 cmd = inb(0x60);
     wait(1); outb(0x64, 0x60);
     wait(1); outb(0x60, cmd | 2);
 
-    write(0xF6); read();   /* set defaults */
-    write(0xF4); read();   /* enable data reporting — THIS WAS MISSING! */
+    /* Reset and enable mouse — skip ACK reads to avoid timeouts */
+    write(0xFF);  /* reset */
+    for (volatile int i = 0; i < 500000; i++) __asm__("");  /* wait for self-test */
+    write(0xF4);  /* enable data reporting */
 
     cycle_ = 0;
     isr_register(0x2C, irq_handler);
     pic_unmask_irq(12);
+
+    serial_write_str("mouse: init done\n");
 }
 
 int Mouse::get(int *x, int *y, int *btn) {

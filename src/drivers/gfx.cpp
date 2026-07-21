@@ -204,7 +204,7 @@ void GfxDriver::puts_utf8(const char *s) {
 }
 
 void GfxDriver::mcursor_restore() {
-    int stride = w_ * 4;  /* actual stride, VBE pitch is wrong */
+    int stride = w_ * 4;
     for (int y = 0; y < cur_h_; y++) {
         int fy = cur_y_ + y;
         if (fy < 0 || fy >= h_) continue;
@@ -221,25 +221,26 @@ void GfxDriver::mcursor_draw() {
     int stride = w_ * 4;
     if (w_ <= 0 || h_ <= 0) return;
 
-    /* Read mouse — draw 8x8 white box at its position */
     int mx, my, mb;
     mouse_get(&mx, &my, &mb);
     cur_x_ = mx - 4; if (cur_x_ < 0) cur_x_ = 0;
     cur_y_ = my - 4; if (cur_y_ < 0) cur_y_ = 0;
+    if (cur_x_ + 8 > w_) cur_x_ = w_ - 8;
+    if (cur_y_ + 8 > h_) cur_y_ = h_ - 8;
 
+    /* Save pixels under cursor, then draw 8x8 red box */
     for (int y = 0; y < 8; y++) {
         int fy = cur_y_ + y;
-        if (fy < 0 || fy >= h_) continue;
         for (int x = 0; x < 8; x++) {
             int fx = cur_x_ + x;
-            if (fx < 0 || fx >= w_) continue;
             int off = fy * stride + fx * 4;
-            *(u32 *)(fb_ + off) = 0x00FF0000;  /* red box */
+            cur_save_[y * 8 + x] = *(u32 *)(fb_ + off);
+            *(u32 *)(fb_ + off) = 0x00FF0000;
         }
     }
 }
 
 void GfxDriver::mcursor_update() {
-    /* skip restore for debugging */
+    mcursor_restore();
     mcursor_draw();
 }

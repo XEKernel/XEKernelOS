@@ -30,13 +30,13 @@ def main():
 
     cmd = [
         'qemu-system-i386',
-        '-fda', os.path.join(BLD, 'xekernelos.img'),
-        '-hda', os.path.join(BLD, 'disk.img'),
+        '-hda', os.path.join(BLD, 'xekernelos.img'),
+        '-hdb', os.path.join(BLD, 'disk.img'),
         '-m', '32',
-        '-boot', 'order=a',
+        '-boot', 'order=c',
         '-serial', 'stdio',
     ]
-    print("XEKernelOS - Starting QEMU (floppy boot)...")
+    print("XEKernelOS - Starting QEMU (hard disk boot)...")
     subprocess.call(cmd)
 
 if __name__ == '__main__':

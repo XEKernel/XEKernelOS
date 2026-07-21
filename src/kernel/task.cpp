@@ -1,6 +1,7 @@
 #include "kernel/task.h"
 #include "kernel/paging.h"
 #include "lib/heap.h"
+#include "lib/ports.h"
 #include "drivers/serial.h"
 
 static u32 next_pid = 1;

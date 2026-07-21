@@ -17,8 +17,21 @@ void IsrManager::register_handler(int vec, void (*fn)(void)) {
 extern "C" void syscall_handler(registers_t *r);
 
 extern "C" void c_isr_handler(registers_t *r) {
-    __asm__ volatile("movb $'!', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     int vec = r->vec;
+
+    /* Identify interrupt source */
+    if (vec == 0x80)
+        __asm__ volatile("movb $'S', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+    else if (vec == 0x20)
+        __asm__ volatile("movb $'T', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+    else {
+        static const char hx[] = "0123456789ABCDEF";
+        char hi = hx[(vec >> 4) & 0xF];
+        char lo = hx[vec & 0xF];
+        __asm__ volatile("movb $'!', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+        __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(hi) : "dx","al");
+        __asm__ volatile("movb %0, %%al; movw $0x3F8, %%dx; outb %%al, %%dx" :: "r"(lo) : "dx","al");
+    }
 
     /* CR3 protection: if came from user mode, switch to kernel page table */
     int from_user = ((r->cs & 3) == 3);
@@ -82,8 +95,10 @@ extern "C" void c_isr_handler(registers_t *r) {
        If schedule() was called, it already loaded the correct CR3 via the
        new task. If not, we need to restore the user's CR3 here. */
     if (from_user && current_task && current_task->paging) {
-        /* Only reload if schedule didn't already do it.
-           We reload unconditionally — it's fast and ensures correctness. */
+        /* Mask ALL slave PIC IRQs (0xA1) to prevent unhandled
+           spurious interrupts (IRQ15 from IDE, etc.) from
+           endlessly preempting user code. */
+        outb(0xA1, 0xFF);
         current_task->paging->load();
     }
 }

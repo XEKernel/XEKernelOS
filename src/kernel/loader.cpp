@@ -23,17 +23,21 @@ static int load_bin_task(const char *path) {
     /* Create user page directory */
     PagingManager *user_pd = new PagingManager();
 
-    /* Map code region at USER_LOAD_ADDR */
+    /* Map code region at USER_LOAD_ADDR — copy via physical address first */
     u32 code_pages = (sz + 0xFFF) / 0x1000;
     for (u32 i = 0; i < code_pages; i++) {
         u32 phys = mm_alloc_page();
         u32 virt = USER_LOAD_ADDR + i * 0x1000;
+
+        /* Copy data to physical page (identity-mapped, <16MB) */
+        u32 copy_start = i * 0x1000;
+        u32 copy_len = ((copy_start + 0x1000) > (u32)sz) ? ((u32)sz - copy_start) : 0x1000;
+        u8 *phys_dst = (u8 *)phys;
+        for (u32 j = 0; j < copy_len; j++)
+            phys_dst[j] = buf[copy_start + j];
+
         user_pd->map_page(virt, phys, PT_FLAGS);
     }
-
-    /* Copy code to virtual addresses */
-    u8 *load_addr = (u8 *)USER_LOAD_ADDR;
-    for (int i = 0; i < sz; i++) load_addr[i] = buf[i];
     kfree(buf);
 
     /* Map user stack region */

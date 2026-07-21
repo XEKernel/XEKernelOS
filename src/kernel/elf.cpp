@@ -20,7 +20,6 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
         return 0;
     }
 
-    /* Validate ELF header */
     if (sz < (int)sizeof(Elf32_Ehdr)) {
         serial_write_str("elf: file too small\n");
         kfree(elf_buf);
@@ -29,7 +28,6 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
 
     Elf32_Ehdr *ehdr = (Elf32_Ehdr *)elf_buf;
 
-    /* Check magic: 0x7F 'E' 'L' 'F' */
     if (ehdr->e_ident[0] != 0x7F || ehdr->e_ident[1] != 'E' ||
         ehdr->e_ident[2] != 'L'  || ehdr->e_ident[3] != 'F') {
         serial_write_str("elf: bad magic\n");
@@ -37,27 +35,24 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
         return 0;
     }
 
-    /* Must be 32-bit, little-endian, executable */
-    if (ehdr->e_type != 2) {  /* ET_EXEC */
+    if (ehdr->e_type != 2) {
         serial_write_str("elf: not executable\n");
         kfree(elf_buf);
         return 0;
     }
-    if (ehdr->e_machine != 3) {  /* EM_386 */
+    if (ehdr->e_machine != 3) {
         serial_write_str("elf: not i386\n");
         kfree(elf_buf);
         return 0;
     }
 
     u32 entry = ehdr->e_entry;
-
     serial_write_str("elf: entry=0x");
     static const char hex[] = "0123456789ABCDEF";
     for (int i = 28; i >= 0; i -= 4)
         serial_write_char(hex[(entry >> i) & 15]);
     serial_write_str("\n");
 
-    /* Parse program headers */
     if (ehdr->e_phoff == 0 || ehdr->e_phnum == 0) {
         serial_write_str("elf: no program headers\n");
         kfree(elf_buf);
@@ -68,7 +63,6 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
 
     for (u16 i = 0; i < ehdr->e_phnum; i++) {
         Elf32_Phdr *ph = &phdrs[i];
-
         if (ph->p_type != PT_LOAD) continue;
 
         u32 vaddr_start = ph->p_vaddr;
@@ -79,16 +73,13 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
         serial_write_str("elf: segment vaddr=0x");
         for (int j = 28; j >= 0; j -= 4)
             serial_write_char(hex[(vaddr_start >> j) & 15]);
-        serial_write_str(" size=");
-        serial_write_char('0' + (ph->p_memsz / 100000) % 10);
-        serial_write_char('0' + (ph->p_memsz / 10000) % 10);
-        serial_write_char('0' + (ph->p_memsz / 1000) % 10);
-        serial_write_char('0' + (ph->p_memsz / 100) % 10);
-        serial_write_char('0' + (ph->p_memsz / 10) % 10);
-        serial_write_char('0' + ph->p_memsz % 10);
         serial_write_str("\n");
 
-        /* Map pages */
+        /* Allocate + copy page by page via physical address,
+           then map. This avoids the kernel-page-table write trap:
+           writing to user vaddr through kernel CR3 hits the
+           kernel's identity mapping (wrong phys page), not the
+           user's allocated page. */
         for (u32 page = page_start; page < page_end; page += 0x1000) {
             u32 phys = mm_alloc_page();
             if (!phys) {
@@ -96,23 +87,34 @@ u32 ElfLoader::load(const char *path, PagingManager *paging) {
                 kfree(elf_buf);
                 return 0;
             }
+
+            /* Copy file data to physical page (identity-mapped, <16MB) */
+            if (ph->p_filesz > 0) {
+                u32 seg_off = page - vaddr_start;
+                u32 copy_start = ph->p_offset + seg_off;
+                if (copy_start < (u32)sz) {
+                    u32 copy_len = ph->p_filesz - seg_off;
+                    if (copy_len > 0x1000) copy_len = 0x1000;
+                    u8 *dst = (u8 *)phys;
+                    for (u32 k = 0; k < copy_len; k++)
+                        dst[k] = elf_buf[copy_start + k];
+                }
+            }
+
+            /* Zero BSS portion within this page */
+            u32 page_end_va = page + 0x1000;
+            if (page_end_va > vaddr_start + ph->p_filesz) {
+                u32 bss_start = (vaddr_start + ph->p_filesz > page)
+                    ? (vaddr_start + ph->p_filesz - page) : 0;
+                u32 bss_end = (page_end_va < vaddr_end)
+                    ? 0x1000 : (vaddr_end - page);
+                u8 *phys_ptr = (u8 *)(phys + bss_start);
+                for (u32 k = bss_start; k < bss_end; k++)
+                    ((u8 *)phys)[k] = 0;
+            }
+
+            /* Now map the physical page into user address space */
             paging->map_page(page, phys, PT_FLAGS);
-        }
-
-        /* Copy file data to virtual addresses */
-        if (ph->p_filesz > 0) {
-            u8 *src = elf_buf + ph->p_offset;
-            u8 *dst = (u8 *)ph->p_vaddr;
-            for (u32 j = 0; j < ph->p_filesz; j++)
-                dst[j] = src[j];
-        }
-
-        /* Zero BSS: memsz - filesz */
-        if (ph->p_memsz > ph->p_filesz) {
-            u8 *bss = (u8 *)(ph->p_vaddr + ph->p_filesz);
-            u32 bss_len = ph->p_memsz - ph->p_filesz;
-            for (u32 j = 0; j < bss_len; j++)
-                bss[j] = 0;
         }
     }
 

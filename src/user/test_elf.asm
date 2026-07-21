@@ -1,48 +1,43 @@
-; test_elf.asm — SYS_WRITE + SYS_READ + SYS_EXIT demo
+; test_elf.asm — file I/O demo: cat README.TXT
 
 [bits 32]
 [global _start]
 
 _start:
-    ; Prompt
-    mov  eax, 1
-    mov  ebx, prompt
-    mov  ecx, prompt_len
+    ; SYS_OPEN("README  TXT")  — FAT12 8.3 name, space-padded
+    mov  eax, 4
+    mov  ebx, fname
+    int  0x80
+    cmp  eax, -1
+    je   .fail
+
+    ; SYS_FREAD(fd=0, buf, 512)
+    mov  eax, 5
+    mov  ebx, 0
+    mov  ecx, buf
+    mov  edx, 512
     int  0x80
 
-    ; Read name
-    mov  eax, 3          ; SYS_READ
-    mov  ebx, buf
-    mov  ecx, 32
-    int  0x80
-
-    ; Greeting
-    mov  eax, 1
-    mov  ebx, hello
-    mov  ecx, hello_len
-    int  0x80
-
-    ; Echo name
+    ; SYS_WRITE the file content
+    mov  ecx, eax          ; bytes read
     mov  eax, 1
     mov  ebx, buf
-    mov  ecx, 32
     int  0x80
 
-    ; Bye
+    mov  eax, 2            ; SYS_EXIT
+    int  0x80
+
+.fail:
     mov  eax, 1
-    mov  ebx, bye
-    mov  ecx, bye_len
+    mov  ebx, errmsg
+    mov  ecx, errmsg_len
+    int  0x80
+    mov  eax, 2
     int  0x80
 
-    mov  eax, 2          ; SYS_EXIT
-    int  0x80
-
-prompt:    db "What's your name?", 0
-prompt_len equ $ - prompt
-hello:     db "Hello, ", 0
-hello_len  equ $ - hello
-bye:       db "! Goodbye!", 0
-bye_len    equ $ - bye
+fname:      db "README  TXT", 0   ; FAT12 8.3 name
+errmsg:     db "File not found!", 0
+errmsg_len  equ $ - errmsg
 
 section .bss
-buf:   resb 32
+buf:   resb 512

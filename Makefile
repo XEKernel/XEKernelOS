@@ -72,7 +72,14 @@ USHELL_ELF   = $(BLDDIR)/ushell.elf
 USHELL_BIN   = $(BLDDIR)/ushell.bin
 USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h
 
-all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR)
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN)
+
+# ... existing targets ...
+
+# Write font_cn.bin to disk.img at LBA 2048
+FONT_BIN = $(BLDDIR)/font_cn.bin
+$(FONT_BIN): tools/gen_font_bin.py tools/unifont.hex.gz | $(BLDDIR)
+	python tools/gen_font_bin.py
 
 $(BOOT_BIN): $(BOOT_SRC) | $(BLDDIR)
 	$(NASM) -f bin $< -o $@

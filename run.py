@@ -24,6 +24,17 @@ def ensure_disk():
     spec.loader.exec_module(mod)
     mod.build_disk(path)
 
+    # Inject CJK font at LBA 2048
+    font_bin = os.path.join(BLD, 'font_cn.bin')
+    if os.path.exists(font_bin):
+        font_data = open(font_bin, 'rb').read()
+        with open(path, 'r+b') as f:
+            f.seek(2048 * 512)
+            f.write(font_data)
+        print(f"Font injected: {len(font_data)} bytes at LBA 2048")
+    else:
+        print("Warning: font_cn.bin not found, skipping")
+
 def main():
     build()
     ensure_disk()

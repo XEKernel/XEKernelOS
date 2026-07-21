@@ -15,22 +15,33 @@ void font_cn_load(void) {
     serial_write_str("font: kmalloc...");
     font_cn_buf = (u8 *)kmalloc(FONT_MAX_SIZE);
     if (!font_cn_buf) { serial_write_str("FAIL\n"); return; }
-    serial_write_str("ok, ata_read...");
+    serial_write_str("ok, test single sector LBA 2048...");
 
-    /* ata_read count is u8 (max 255). Read in 255-sector chunks. */
-    int sectors = (FONT_MAX_SIZE + 511) / 512;
-    int remain = sectors;
-    u32 lba = FONT_LBA;
-    u8 *ptr = font_cn_buf;
+    /* Test: read just 1 sector at LBA 2048 first */
+    int r = ata_read(2048, 1, (u16 *)font_cn_buf);
+    serial_write_str("r=");
+    serial_write_char('0'+(r/10)%10);
+    serial_write_char('0'+r%10);
+    serial_write_str(" b0=");
+    serial_write_char("0123456789ABCDEF"[(font_cn_buf[0]>>4)&15]);
+    serial_write_char("0123456789ABCDEF"[font_cn_buf[0]&15]);
+    serial_write_str(" b1=");
+    serial_write_char("0123456789ABCDEF"[(font_cn_buf[1]>>4)&15]);
+    serial_write_char("0123456789ABCDEF"[font_cn_buf[1]&15]);
+    serial_write_str("\n");
+
+    if (r) { kfree(font_cn_buf); font_cn_buf = nullptr; return; }
+
+    /* Read rest in 1-sector chunks */
+    int remain = ((FONT_MAX_SIZE + 511) / 512) - 1;
+    u32 lba = 2049;
+    u8 *ptr = font_cn_buf + 512;
     while (remain > 0) {
-        u8 chunk = (remain > 255) ? 255 : (u8)remain;
-        int r = ata_read(lba, chunk, (u16 *)ptr);
-        if (r) { serial_write_str("ERR\n"); kfree(font_cn_buf); font_cn_buf = nullptr; return; }
-        lba += chunk;
-        ptr += chunk * 512;
-        remain -= chunk;
+        r = ata_read(lba, 1, (u16 *)ptr);
+        if (r) { serial_write_str("ERR at "); serial_write_char('0'+(lba/1000)%10); serial_write_char('0'+(lba/100)%10); serial_write_char('0'+(lba/10)%10); serial_write_char('0'+lba%10); serial_write_str("\n"); kfree(font_cn_buf); font_cn_buf = nullptr; return; }
+        lba++; ptr += 512; remain--;
     }
-    serial_write_str("ok\n");
+    serial_write_str(" all read ok\n");
 
     font_cn_count_val = font_cn_buf[0] | (font_cn_buf[1] << 8);
     serial_write_str("font: loaded ");

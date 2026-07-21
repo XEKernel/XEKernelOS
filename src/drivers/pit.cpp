@@ -1,5 +1,6 @@
 #include "drivers/pit.h"
 #include "drivers/pic.h"
+#include "drivers/gfx.h"
 #include "kernel/isr.h"
 #include "lib/ports.h"
 
@@ -9,7 +10,11 @@
 volatile u32 PitTimer::ticks_ = 0;
 PitTimer pit;
 
-void PitTimer::handler() { ticks_++; }
+void PitTimer::handler() {
+    ticks_++;
+    if ((ticks_ & 1) == 0)  /* every other tick ≈ 50Hz */
+        gfx.mcursor_update();
+}
 
 void PitTimer::init() {
     u32 div = 1193180 / 100;

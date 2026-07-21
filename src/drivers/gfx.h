@@ -57,13 +57,21 @@ private:
     int  cx_ = 0, cy_ = 0;
     u8   fg_ = 0x0F, bg_ = 0x00;
     u32  palette_[256]{};
+    int  cur_x_ = 0, cur_y_ = 0;
+    u32  cur_save_[8*8];
+    int  cur_w_ = 8, cur_h_ = 8;
 
     void init_palette();
     void draw_char(int sx, int sy, char c, u8 fg, u8 bg);
     void scroll();
     const unsigned char *font_cn_lookup(u16 cp);
     void draw_cn_char(int sx, int sy, u16 cp, u8 fg, u8 bg);
+
+public:
     static int utf8_decode(const char *s, u16 *cp);
+    void mcursor_restore();
+    void mcursor_draw();
+    void mcursor_update();
 };
 
 /* Global GFX instance */

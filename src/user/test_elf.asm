@@ -35,7 +35,7 @@ _start:
     mov  eax, 2
     int  0x80
 
-fname:      db "README  TXT", 0   ; FAT12 8.3 name
+fname:      db "README.TXT", 0    ; str_to_name83 splits on '.'
 errmsg:     db "File not found!", 0
 errmsg_len  equ $ - errmsg
 

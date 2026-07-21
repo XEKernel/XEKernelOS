@@ -8,8 +8,8 @@
 #include "drivers/serial.h"
 #include "drivers/gfx.h"
 
-#define USER_LOAD_ADDR   0x400000
-#define USER_STACK_TOP   0xB0000000  /* 4KB user stack at top of user space */
+#define USER_LOAD_ADDR   0x08000000  /* PDE 32 — clear of kernel 0-3 (0-16MB) */
+#define USER_STACK_TOP   0xB0000000  /* PDE 704 — 4KB user stack */
 #define USER_STACK_SIZE  0x1000
 
 /* Simple BIN loader: copy to fixed address, create user task */

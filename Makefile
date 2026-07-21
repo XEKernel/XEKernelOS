@@ -106,7 +106,7 @@ $(TEST_ELF_O): $(TEST_ELF_ASM) | $(BLDDIR)
 	$(NASM) -f elf32 $< -o $@
 
 $(TEST_ELF): $(TEST_ELF_O)
-	$(LD) $(LDFLAGS) -Ttext=0x400000 $< -o $@
+	$(LD) $(LDFLAGS) -Ttext=0x08000000 $< -o $@
 	@echo "  ELF test: $$(wc -c < $@)B"
 
 run: $(IMG)

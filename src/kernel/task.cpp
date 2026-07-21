@@ -122,17 +122,20 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
 void task_start_user(void) {
     if (!current_task || !current_task->paging) return;
 
-    /* Load user page directory */
-    current_task->paging->load();
-
-    /* Build ring-3 iret frame on kernel stack:
-       The CPU will pop: SS, ESP, EFLAGS, CS, EIP (cross-privilege iretd) */
+    /* Build the ring-3 iret frame on the kernel stack FIRST,
+       while still using the kernel CR3.  After we load the user
+       page directory, we MUST NOT touch any kernel data. */
     u32 *sp = (u32 *)(current_task->kernel_stack + 4096);
     *(--sp) = 0x23;                        // SS (user data)
     *(--sp) = current_task->user_stack;    // ESP
     *(--sp) = 0x202;                       // EFLAGS (IF set)
     *(--sp) = 0x2B;                        // CS (user code, RPL=3)
     *(--sp) = current_task->eip;           // EIP
+
+    /* Load user page directory — from here on, only the stack
+       frame and inline asm are mapped (kernel 4MB PDEs cloned
+       into user PD). */
+    current_task->paging->load();
 
     __asm__ volatile(
         "mov %0, %%esp\n"

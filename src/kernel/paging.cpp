@@ -12,6 +12,18 @@ PagingManager::PagingManager() {
     /* Zero the page directory */
     for (int i = 0; i < 1024; i++)
         page_dir_virt_[i] = 0;
+
+    /* Clone kernel 4MB identity mappings so ISR code + iret
+       can execute with this page directory loaded.  PDEs are
+       PAGE_PRESENT|PAGE_RW|PAGE_PSE — no PAGE_USER, so ring 3
+       cannot touch kernel pages. */
+    if (kernel_paging && this != kernel_paging) {
+        for (int i = 0; i < 1024; i++) {
+            u32 kpde = kernel_paging->page_dir_virt_[i];
+            if (kpde & PAGE_PRESENT)
+                page_dir_virt_[i] = kpde;
+        }
+    }
 }
 
 PagingManager::~PagingManager() {

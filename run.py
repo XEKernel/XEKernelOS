@@ -24,6 +24,13 @@ def ensure_disk():
     spec.loader.exec_module(mod)
     mod.build_disk(path)
 
+    # Expand to 4MB so font at LBA 2048 fits (needs ~2MB)
+    sz = os.path.getsize(path)
+    need = 4 * 1024 * 1024
+    if sz < need:
+        with open(path, 'ab') as f:
+            f.write(b'\x00' * (need - sz))
+
     # Inject CJK font at LBA 2048
     font_bin = os.path.join(BLD, 'font_cn.bin')
     if os.path.exists(font_bin):

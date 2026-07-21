@@ -75,6 +75,27 @@ void Mouse::init() {
 }
 
 int Mouse::get(int *x, int *y, int *btn) {
+    /* Poll PS/2 port for any pending mouse data (bypasses IRQ) */
+    for (int i = 0; i < 10; i++) {
+        u8 st = inb(0x64);
+        if ((st & 1) == 0) break;        /* no data */
+        if ((st & 0x20) == 0) { inb(0x60); continue; } /* keyboard data, discard */
+        /* Mouse data byte */
+        u8 data = inb(0x60);
+        pkt_[cycle_] = data;
+        cycle_ = (cycle_ + 1) % 3;
+        if (cycle_ == 0) {
+            u8 b = pkt_[0];
+            int dx = (b & 0x10) ? (int)(pkt_[1] | 0xFFFFFF00) : pkt_[1];
+            int dy = (b & 0x20) ? (int)(pkt_[2] | 0xFFFFFF00) : pkt_[2];
+            mx_ += dx; my_ -= dy;
+            if (mx_ < 0) mx_ = 0;
+            if (my_ < 0) my_ = 0;
+            if (mx_ > 1023) mx_ = 1023;
+            if (my_ > 767) my_ = 767;
+            mbtn_ = b & 7;
+        }
+    }
     *x = mx_; *y = my_; *btn = mbtn_;
     return 1;
 }

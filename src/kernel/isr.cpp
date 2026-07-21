@@ -2,6 +2,7 @@
 #include "kernel/panic.h"
 #include "kernel/task.h"
 #include "kernel/paging.h"
+#include "kernel/syscall.h"
 #include "drivers/gfx.h"
 #include "drivers/keyboard.h"
 #include "shell/shell.h"
@@ -26,6 +27,11 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     void (*h)(void) = isr_mgr.lookup(vec);
     if (h) h();
+
+    if (vec == 0x80) {
+        syscall_handler(r);
+        return;
+    }
 
     if (vec == 0x20) {
         if (kb_ctrl_c()) {

@@ -10,6 +10,10 @@ static void sys_write(registers_t *r) {
 }
 
 extern "C" void syscall_handler(registers_t *r) {
+    serial_write_char('[');
+    serial_write_char('0' + (r->eax / 10) % 10);
+    serial_write_char('0' + r->eax % 10);
+    serial_write_char(']');
     switch (r->eax) {
     case SYS_WRITE:
         sys_write(r);

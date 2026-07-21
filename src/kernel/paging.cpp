@@ -73,7 +73,7 @@ void PagingManager::load() {
 void PagingManager::map_kernel_4mb(u32 phys_addr) {
     u32 pde_idx = phys_addr >> 22;
     page_dir_virt_[pde_idx] = (phys_addr & 0xFFC00000)
-        | PAGE_PRESENT | PAGE_RW | PAGE_PSE;
+        | PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_PSE;
 }
 
 void PagingManager::map_user_4mb(u32 virt_addr, u32 phys_addr) {

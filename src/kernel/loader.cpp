@@ -1,71 +1,70 @@
 #include "kernel/loader.h"
 #include "kernel/elf.h"
 #include "kernel/user.h"
-#include "kernel/paging.h"
-#include "kernel/mm.h"
 #include "lib/heap.h"
 #include "fs/fat12.h"
 #include "drivers/serial.h"
 #include "drivers/gfx.h"
 
-#define USER_LOAD_ADDR   0x10000000
-#define USER_LOAD_PHYS   0x01000000  /* physical 16MB, within QEMU 32MB */
-#define USER_STACK_TOP   0xB0000000
-#define USER_STACK_SIZE  0x1000
+/* Load code at 0x400000 via kernel identity mapping (PDE[1] with USER).
+   Matches original user_run() approach. No CR3 switch needed. */
+#define USER_LOAD_ADDR 0x400000
 
-static int load_bin_task(const char *path) {
+int load_elf(const char *path) {
     u8 *buf = (u8 *)kmalloc(65536);
     if (!buf) return -1;
 
     int sz = fat_read_file_buf(path, buf, 65536);
     if (sz <= 0) { kfree(buf); return -1; }
 
-    PagingManager *user_pd = new PagingManager();
+    /* Check ELF magic */
+    if (sz < 52 || buf[0] != 0x7F || buf[1] != 'E' || buf[2] != 'L' || buf[3] != 'F') {
+        /* Not ELF — treat as flat binary */
+        u8 *dst = (u8 *)USER_LOAD_ADDR;
+        for (int i = 0; i < sz; i++) dst[i] = buf[i];
+        kfree(buf);
+        gfx_puts("Running user program...\n");
+        enter_user_mode(USER_LOAD_ADDR, 0, nullptr);
+        return 0;
+    }
 
-    /* Copy code to physical 0x1000000 via identity mapping */
-    u8 *phys_dst = (u8 *)USER_LOAD_PHYS;
-    for (int i = 0; i < sz; i++) phys_dst[i] = buf[i];
+    /* Simple ELF loader: find first PT_LOAD executable segment */
+    Elf32_Ehdr *ehdr = (Elf32_Ehdr *)buf;
+    u32 entry = ehdr->e_entry;
+
+    serial_write_str("elf: entry=0x");
+    static const char hex[] = "0123456789ABCDEF";
+    for (int j = 28; j >= 0; j -= 4) serial_write_char(hex[(entry >> j) & 15]);
+    serial_write_str("\n");
+
+    Elf32_Phdr *phdrs = (Elf32_Phdr *)(buf + ehdr->e_phoff);
+    for (u16 i = 0; i < ehdr->e_phnum; i++) {
+        Elf32_Phdr *ph = &phdrs[i];
+        if (ph->p_type != 1) continue;  /* PT_LOAD */
+        if (!(ph->p_flags & 1)) continue;  /* must be executable */
+
+        serial_write_str("elf: segment vaddr=0x");
+        for (int j = 28; j >= 0; j -= 4) serial_write_char(hex[(ph->p_vaddr >> j) & 15]);
+        serial_write_str("\n");
+
+        /* Copy directly to virtual address (kernel identity-mapped) */
+        u8 *dst = (u8 *)ph->p_vaddr;
+        u32 copy_len = ph->p_filesz;
+        if (ph->p_offset + copy_len > (u32)sz) copy_len = (u32)sz - ph->p_offset;
+        for (u32 k = 0; k < copy_len; k++)
+            dst[k] = buf[ph->p_offset + k];
+
+        /* Zero BSS */
+        for (u32 k = copy_len; k < ph->p_memsz; k++)
+            dst[k] = 0;
+    }
+
     kfree(buf);
-
-    /* Map as 4MB PSE page with USER flag */
-    user_pd->map_user_4mb(USER_LOAD_ADDR, USER_LOAD_PHYS);
-
-    /* Map user stack with a 4KB page table (small, no PSE) */
-    for (u32 i = 0; i < USER_STACK_SIZE / 0x1000; i++) {
-        u32 phys = mm_alloc_page();
-        u32 virt = USER_STACK_TOP - (i+1)*0x1000;
-        /* Copy zeros — stack is initially empty */
-        u8 *s = (u8 *)phys;
-        for (u32 j = 0; j < 0x1000; j++) s[j] = 0;
-        user_pd->map_page(virt, phys, PT_FLAGS);
-    }
-
-    gfx_puts("Running user program...\n");
-    enter_user_mode(USER_LOAD_ADDR, USER_STACK_TOP, user_pd);
-    return 0;
-}
-
-int load_elf(const char *path) {
-    PagingManager *user_pd = new PagingManager();
-
-    /* For ELF, we load to physical 0x1000000, 4MB PSE page */
-    u32 entry = ElfLoader::load(path, user_pd);
-    if (!entry) { delete user_pd; return -1; }
-
-    for (u32 i = 0; i < USER_STACK_SIZE / 0x1000; i++) {
-        u32 phys = mm_alloc_page();
-        user_pd->map_page(USER_STACK_TOP - (i+1)*0x1000, phys, PT_FLAGS);
-    }
-
     gfx_puts("Running ELF program...\n");
-    enter_user_mode(entry, USER_STACK_TOP, user_pd);
+    enter_user_mode(entry, 0, nullptr);
     return 0;
 }
 
 int load_binary(const char *path) {
-    u8 magic[4];
-    if (fat_read_file_buf(path, magic, 4) < 4) return -1;
-    if (magic[0]==0x7F && magic[1]=='E' && magic[2]=='L' && magic[3]=='F')
-        return load_elf(path);
-    return load_bin_task(path);
+    return load_elf(path);  /* handle both ELF and BIN */
 }

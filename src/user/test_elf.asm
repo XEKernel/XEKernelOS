@@ -1,4 +1,4 @@
-; test_elf.asm — SYS_WRITE test
+; test_elf.asm — SYS_WRITE test, linked at 0x400000
 
 [bits 32]
 [global _start]

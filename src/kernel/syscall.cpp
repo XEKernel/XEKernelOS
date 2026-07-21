@@ -5,6 +5,8 @@
 #include "drivers/serial.h"
 #include "drivers/keyboard.h"
 #include "drivers/gfx.h"
+#include "drivers/mouse.h"
+#include "drivers/pit.h"
 #include "fs/fat12.h"
 #include "lib/heap.h"
 #include "lib/ports.h"
@@ -133,6 +135,34 @@ static void sys_getfb(registers_t *r) {
     r->eax = 5;  /* number of u32 values written */
 }
 
+static void sys_mouse(registers_t *r) {
+    u32 *buf = (u32 *)r->ebx;
+    if (!buf) { r->eax = (u32)-1; return; }
+    int x, y, btn;
+    mouse_get(&x, &y, &btn);
+    buf[0] = (u32)x;
+    buf[1] = (u32)y;
+    buf[2] = (u32)btn;
+    r->eax = 3;
+}
+
+static void sys_sleep(registers_t *r) {
+    u32 ms = r->ebx;
+    if (ms > 60000) ms = 60000;  /* cap at 1 minute */
+    /* PIT ticks at 100Hz — 1 tick = 10ms */
+    u32 target = pit.ticks() + ms / 10 + 1;
+    while (pit.ticks() < target) {
+        __asm__ volatile("sti; hlt; cli");
+    }
+    r->eax = ms;
+}
+
+static void sys_cls(registers_t *r) {
+    u8 color = (u8)r->ebx;  /* palette index or BGRA blue byte */
+    gfx_clear(color);
+    r->eax = 0;
+}
+
 extern "C" void syscall_handler(registers_t *r) {
     __asm__ volatile("movb $'[', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     char c = '0' + (r->eax % 10);
@@ -149,6 +179,9 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_TIME:  sys_time(r);  break;
     case SYS_GETFB: sys_getfb(r); break;
     case SYS_CLOSE: sys_close(r); break;
+    case SYS_MOUSE: sys_mouse(r); break;
+    case SYS_SLEEP: sys_sleep(r); break;
+    case SYS_CLS:   sys_cls(r);   break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
         for (int i = 0; i < MAX_FD; i++) {

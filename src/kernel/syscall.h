@@ -11,6 +11,9 @@
 #define SYS_TIME   8
 #define SYS_GETFB  9
 #define SYS_CLOSE  10
+#define SYS_MOUSE  11
+#define SYS_SLEEP  12
+#define SYS_CLS    13
 
 #ifdef __cplusplus
 extern "C" {

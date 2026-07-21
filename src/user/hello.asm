@@ -30,9 +30,9 @@ entry:
     mov ecx, msg4_len
     int 0x80
 
-    ; Hang (no exit syscall yet) — pause is Ring3-safe
-.hang:  pause
-    jmp .hang
+    ; Exit back to shell
+    mov eax, 2
+    int 0x80
 
 msg1: db "====================================", 0
 msg1_len equ $ - msg1 - 1

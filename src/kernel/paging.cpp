@@ -83,8 +83,10 @@ PagingManager *PagingManager::get_kernel_paging() {
 void PagingManager::init_kernel_paging() {
     kernel_paging = new PagingManager();
 
-    /* Identity-map first 16MB as 4MB PSE pages (kernel code/data/heap) */
-    for (int i = 0; i < 4; i++)
+    /* Identity-map first 16MB + heap region as 4MB PSE pages
+       PDE 0-3:  kernel code/data (0-16MB)
+       PDE 4-7:  heap (0x01000000-0x01FFFFFF from linker.ld) */
+    for (int i = 0; i < 8; i++)
         kernel_paging->map_kernel_4mb(i * 0x400000);
 
     /* Also map framebuffer region (may be above 16MB) */

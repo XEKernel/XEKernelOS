@@ -4,3 +4,4 @@
 void shell_loop(void);
 void shell_save_esp(void);
 void shell_recover(registers_t *r);
+void shell_redraw(void);

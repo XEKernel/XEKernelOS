@@ -2,6 +2,7 @@
 #include "kernel/elf.h"
 #include "kernel/user.h"
 #include "kernel/paging.h"
+#include "shell/shell.h"
 #include "lib/heap.h"
 #include "fs/fat12.h"
 #include "drivers/serial.h"
@@ -51,6 +52,7 @@ static int load_flat_binary(const char *path, const char *args) {
     gfx_puts("Running user program...\n");
     int ac = args ? count_args(args) : 0;
     enter_user_mode(USER_LOAD_ADDR, 0, user_pd, ac, args);
+    shell_redraw();
     gfx_putc('\n');
     return 0;
 }
@@ -116,6 +118,7 @@ static int load_elf_binary(const char *path, const char *args) {
     gfx_puts("Running ELF program...\n");
     int ac = args ? count_args(args) : 0;
     enter_user_mode(entry, 0, user_pd, ac, args);
+    shell_redraw();
     gfx_putc('\n');
     return 0;
 }

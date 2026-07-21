@@ -345,6 +345,21 @@ void shell_recover(registers_t *r) {
     r->eax    = 0;
 }
 
+void shell_redraw(void) {
+    /* Clear framebuffer and redraw shell prompt */
+    gfx_clear(COLOR_BLACK);
+    gfx_set_fg(COLOR_LGREEN);
+    gfx_puts("XEKernel");
+    gfx_set_fg(COLOR_LCYAN);
+    char cwd[32];
+    fat_cwd_str(cwd, 32);
+    gfx_puts(cwd);
+    gfx_set_fg(COLOR_LGREEN);
+    gfx_puts("> ");
+    gfx_set_fg(COLOR_LGRAY);
+    gfx_cursor_draw();
+}
+
 void shell_loop(void) {
     shell_save_esp();
     gfx_puts("\n");

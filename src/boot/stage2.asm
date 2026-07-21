@@ -63,6 +63,8 @@ entry:
     mov bx, 0x4144
     or bx, 0x4000
     int 0x10
+    cmp ax, 0x004F
+    jne boot_stop
 
     mov di, mode_info
     mov ax, 0x4F01

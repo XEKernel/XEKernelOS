@@ -10,6 +10,7 @@
 #define SYS_GETCWD 7
 #define SYS_TIME   8
 #define SYS_GETFB  9
+#define SYS_CLOSE  10
 
 #ifdef __cplusplus
 extern "C" {

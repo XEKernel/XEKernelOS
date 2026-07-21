@@ -112,6 +112,15 @@ static void sys_time(registers_t *r) {
     r->eax = 8;
 }
 
+static void sys_close(registers_t *r) {
+    u32 fd = r->ebx;
+    if (fd >= MAX_FD || !fd_buf[fd]) { r->eax = (u32)-1; return; }
+    kfree(fd_buf[fd]);
+    fd_buf[fd] = nullptr;
+    fd_size[fd] = 0;
+    r->eax = 0;
+}
+
 static void sys_getfb(registers_t *r) {
     /* Fill user buffer with {fb_addr, w, h, pitch, bpp} (5 × u32) */
     u32 *buf = (u32 *)r->ebx;
@@ -139,6 +148,7 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_GETCWD: sys_getcwd(r); break;
     case SYS_TIME:  sys_time(r);  break;
     case SYS_GETFB: sys_getfb(r); break;
+    case SYS_CLOSE: sys_close(r); break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
         for (int i = 0; i < MAX_FD; i++) {

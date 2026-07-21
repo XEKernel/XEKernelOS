@@ -33,6 +33,7 @@ extern "C" void c_isr_handler(registers_t *r) {
     }
 
     if (vec == 0x20) {
+        outb(0x20, 0x20);  /* EOI before scheduling — unblocks slave PIC (mouse IRQ12) */
         if (kb_ctrl_c()) {
             shell_recover(r);
             return;

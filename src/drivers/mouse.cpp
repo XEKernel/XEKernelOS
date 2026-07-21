@@ -20,24 +20,10 @@ static int rready() {
 static void mwrite(u8 d) { if (wready()) { outb(0x64, 0xD4); if (wready()) outb(0x60, d); } }
 
 void Mouse::irq_handler() {
-    static int cnt = 0;
     u8 st = inb(0x64);
     if (st & 0x20) {
-        if (cnt < 3) { serial_write_char('M'); cnt++; }
         u8 data = inb(0x60);
-        mouse.pkt_[mouse.cycle_] = data;
-        mouse.cycle_ = (mouse.cycle_ + 1) % 3;
-        if (mouse.cycle_ == 0) {
-            u8 b = mouse.pkt_[0];
-            int dx = (b & 0x10) ? (int)(mouse.pkt_[1] | 0xFFFFFF00) : mouse.pkt_[1];
-            int dy = (b & 0x20) ? (int)(mouse.pkt_[2] | 0xFFFFFF00) : mouse.pkt_[2];
-            mouse.mx_ += dx; mouse.my_ -= dy;
-            if (mouse.mx_ < 0) mouse.mx_ = 0;
-            if (mouse.my_ < 0) mouse.my_ = 0;
-            if (mouse.mx_ > 1023) mouse.mx_ = 1023;
-            if (mouse.my_ > 767) mouse.my_ = 767;
-            mouse.mbtn_ = b & 7;
-        }
+        mouse.feed_byte(data);
     }
 }
 
@@ -64,38 +50,71 @@ void Mouse::init() {
     if (!rready()) return;
     inb(0x60);                      /* device ID 0x00 */
 
+    /* Standard init sequence (OSDev recommended) */
+    mwrite(0xF6);                   /* set defaults */
+    if (rready()) inb(0x60);
+
+    mwrite(0xE8); mwrite(0x02);    /* set resolution: 4 counts/mm */
+    if (rready()) inb(0x60);
+    if (rready()) inb(0x60);
+
+    mwrite(0xE6);                   /* set scaling 1:1 */
+    if (rready()) inb(0x60);
+
+    mwrite(0xF3); mwrite(100);     /* set sample rate: 100 Hz */
+    if (rready()) inb(0x60);
+    if (rready()) inb(0x60);
+
     mwrite(0xF4);                   /* enable reporting */
     if (!rready()) { serial_write_str("mouse: no ack to enable\n"); return; }
     inb(0x60);
 
     cycle_ = 0;
-    isr_register(0x2C, irq_handler);
-    pic_unmask_irq(12);
-    serial_write_str("mouse: init ok\n");
+    /* Don't enable IRQ12 — keyboard polling loop is the sole PS/2 reader.
+     * Having two readers (IRQ + polling) causes byte interleaving and
+     * permanent packet corruption. */
+    serial_write_str("mouse: init ok (polling)\n");
 }
 
 int Mouse::get(int *x, int *y, int *btn) {
-    /* Poll PS/2 port for any pending mouse data (bypasses IRQ) */
-    for (int i = 0; i < 10; i++) {
-        u8 st = inb(0x64);
-        if ((st & 1) == 0) break;        /* no data */
-        if ((st & 0x20) == 0) { inb(0x60); continue; } /* keyboard data, discard */
-        /* Mouse data byte */
-        u8 data = inb(0x60);
-        pkt_[cycle_] = data;
-        cycle_ = (cycle_ + 1) % 3;
-        if (cycle_ == 0) {
-            u8 b = pkt_[0];
-            int dx = (b & 0x10) ? (int)(pkt_[1] | 0xFFFFFF00) : pkt_[1];
-            int dy = (b & 0x20) ? (int)(pkt_[2] | 0xFFFFFF00) : pkt_[2];
-            mx_ += dx; my_ -= dy;
-            if (mx_ < 0) mx_ = 0;
-            if (my_ < 0) my_ = 0;
-            if (mx_ > 1023) mx_ = 1023;
-            if (my_ > 767) my_ = 767;
-            mbtn_ = b & 7;
-        }
-    }
+    /* Data ingestion is handled by:
+     *   - keyboard polling loop (read_scan → feed_byte)
+     *   - IRQ12 handler (irq_handler → feed_byte)
+     * Don't poll here — avoid racing with those paths. */
     *x = mx_; *y = my_; *btn = mbtn_;
     return 1;
+}
+
+void Mouse::feed_byte(u8 data) {
+    /* Byte 0 of PS/2 packet always has bit 3 set — use as sync marker.
+     * Drop bytes that don't look like byte 0 when expecting cycle_==0. */
+    if (cycle_ == 0 && !(data & 0x08))
+        return;
+
+    pkt_[cycle_] = data;
+    cycle_ = (cycle_ + 1) % 3;
+
+    if (cycle_ == 0) {
+        u8 b = pkt_[0];
+
+        /* Bits 7 (Y overflow) & 6 (X overflow) — discard entire packet.
+         * During fast movement the mouse may overflow its internal counter;
+         * the movement values in this packet are invalid. */
+        if (b & 0xC0)
+            return;
+
+        /* 8-bit signed movement with overflow sign extension */
+        int dx = (b & 0x10) ? (int)(pkt_[1] | 0xFFFFFF00) : (int)pkt_[1];
+        int dy = (b & 0x20) ? (int)(pkt_[2] | 0xFFFFFF00) : (int)pkt_[2];
+
+        mx_ += dx;
+        my_ -= dy;   /* PS/2 Y is inverted */
+
+        if (mx_ < 0) mx_ = 0;
+        if (my_ < 0) my_ = 0;
+        if (mx_ > 1023) mx_ = 1023;
+        if (my_ > 767) my_ = 767;
+
+        mbtn_ = b & 7;
+    }
 }

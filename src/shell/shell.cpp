@@ -12,6 +12,8 @@
 #include "lib/strutil.h"
 
 #include "drivers/serial.h"
+#include "kernel/paging.h"
+#include "user/ushell_blob.h"
 
 // (keep other includes)
 
@@ -88,6 +90,7 @@ static void cmd_help(void) {
     gfx_puts_utf8("  ECHO        回显\n");
     gfx_puts_utf8("  REBOOT      重启\n");
     gfx_puts_utf8("  SHUTDOWN    关机\n");
+    gfx_puts_utf8("  USERSH      用户态 Shell\n");
 }
 
 static void cmd_info(void) {
@@ -331,6 +334,20 @@ static void cmd_shutdown(void) {
     __asm__ volatile("0: hlt; jmp 0b");
 }
 
+static void cmd_usersh(void) {
+    /* Copy embedded user-shell binary to user-space load address, then
+     * enter Ring3.  On exit (SYS_EXIT), shell_loop is resumed. */
+    u8 *dst = (u8 *)0x400000;
+    for (u32 i = 0; i < ushell_blob_len; i++)
+        dst[i] = ushell_blob[i];
+
+    gfx_clear(COLOR_BLACK);
+    PagingManager *user_pd = new PagingManager();
+    enter_user_mode(0x400000, 0, user_pd, 0, nullptr);
+    shell_redraw();
+    gfx_putc('\n');
+}
+
 static u32 shell_esp;
 
 void shell_save_esp(void) {
@@ -362,6 +379,7 @@ void shell_redraw(void) {
 
 void shell_loop(void) {
     shell_save_esp();
+    __asm__ volatile("sti");  /* enable interrupts → PIT fires → mcursor_update */
     for (;;) {
         gfx_set_fg(COLOR_LGREEN);
         gfx_puts("XEKernel");
@@ -375,7 +393,7 @@ void shell_loop(void) {
         gfx_puts("> ");
         gfx_set_fg(COLOR_LGRAY);
         gfx_cursor_draw();
-        gfx.mcursor_draw();
+        gfx.mcursor_update();
         kb_readline(buf, CMD_BUF);
         gfx_cursor_erase();
         if (!buf[0]) continue;
@@ -443,6 +461,8 @@ void shell_loop(void) {
             cmd_reboot();
         else if (!strcmp_ci(buf, "SHUTDOWN"))
             cmd_shutdown();
+        else if (!strcmp_ci(buf, "USERSH"))
+            cmd_usersh();
         else {
             gfx_set_fg(COLOR_LRED);
             gfx_puts_utf8("未知命令。输入 HELP 查看帮助。\n");

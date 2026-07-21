@@ -12,8 +12,7 @@ PitTimer pit;
 
 void PitTimer::handler() {
     ticks_++;
-    if ((ticks_ & 1) == 0)  /* every other tick ≈ 50Hz */
-        gfx.mcursor_update();
+    gfx.mcursor_update();  /* every tick ≈ 100Hz for smooth cursor */
 }
 
 void PitTimer::init() {
@@ -23,6 +22,7 @@ void PitTimer::init() {
     outb(PIT_CH0, (div >> 8) & 0xFF);
     ticks_ = 0;
     isr_register(0x20, handler);
+    pic_unmask_irq(0);  /* PIT IRQ0 was masked in PIC initial config */
 }
 
 void PitTimer::sleep(int ms) {

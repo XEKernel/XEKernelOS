@@ -49,7 +49,7 @@ static int load_flat_binary(const char *path, const char *args) {
     serial_write_str(" bytes)\n");
 
     PagingManager *user_pd = new PagingManager();
-    gfx_puts("Running user program...\n");
+    gfx_puts("运行中...\n");
     int ac = args ? count_args(args) : 0;
     enter_user_mode(USER_LOAD_ADDR, 0, user_pd, ac, args);
     shell_redraw();
@@ -115,7 +115,7 @@ static int load_elf_binary(const char *path, const char *args) {
 
     kfree(buf);
     PagingManager *user_pd = new PagingManager();
-    gfx_puts("Running ELF program...\n");
+    gfx_puts("运行 ELF 程序...\n");
     int ac = args ? count_args(args) : 0;
     enter_user_mode(entry, 0, user_pd, ac, args);
     shell_redraw();

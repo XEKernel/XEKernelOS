@@ -14,6 +14,9 @@
 #define SYS_MOUSE  11
 #define SYS_SLEEP  12
 #define SYS_CLS    13
+#define SYS_GFX_PUTC  14
+#define SYS_GFX_PUTS  15
+#define SYS_GFX_SET_FG 16
 
 #ifdef __cplusplus
 extern "C" {

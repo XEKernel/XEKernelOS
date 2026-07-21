@@ -163,6 +163,21 @@ static void sys_cls(registers_t *r) {
     r->eax = 0;
 }
 
+static void sys_gfx_putc(registers_t *r) {
+    gfx.putc((char)r->ebx);
+    r->eax = 0;
+}
+
+static void sys_gfx_puts(registers_t *r) {
+    gfx.puts((const char *)r->ebx);
+    r->eax = 0;
+}
+
+static void sys_gfx_set_fg(registers_t *r) {
+    gfx.set_fg((u8)r->ebx);
+    r->eax = 0;
+}
+
 extern "C" void syscall_handler(registers_t *r) {
     __asm__ volatile("movb $'[', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     char c = '0' + (r->eax % 10);
@@ -182,6 +197,9 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_MOUSE: sys_mouse(r); break;
     case SYS_SLEEP: sys_sleep(r); break;
     case SYS_CLS:   sys_cls(r);   break;
+    case SYS_GFX_PUTC: sys_gfx_putc(r); break;
+    case SYS_GFX_PUTS: sys_gfx_puts(r); break;
+    case SYS_GFX_SET_FG: sys_gfx_set_fg(r); break;
     case SYS_EXIT:
         PagingManager::get_kernel_paging()->load();
         for (int i = 0; i < MAX_FD; i++) {

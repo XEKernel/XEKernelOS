@@ -5,6 +5,7 @@ class Mouse {
 public:
     void init();
     int  get(int *x, int *y, int *btn);
+    void feed_byte(u8 data);   /* external byte feed (keyboard polling loop) */
 
 private:
     int  mx_ = 0, my_ = 0, mbtn_ = 0;

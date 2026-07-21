@@ -47,7 +47,7 @@ int AtaController::identify(u16 *buf) {
 }
 
 int AtaController::read(u32 lba, u8 count, u16 *buf) {
-    outb(ATA_DRIVE, 0xF0 | ((lba >> 24) & 0x0F));
+    outb(ATA_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
     outb(ATA_SECTORS, count);
     outb(ATA_LBA_LO, lba & 0xFF);
     outb(ATA_LBA_MID, (lba >> 8) & 0xFF);
@@ -65,7 +65,7 @@ int AtaController::read(u32 lba, u8 count, u16 *buf) {
 }
 
 int AtaController::write(u32 lba, u8 count, const u16 *buf) {
-    outb(ATA_DRIVE, 0xF0 | ((lba >> 24) & 0x0F));
+    outb(ATA_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
     outb(ATA_SECTORS, count);
     outb(ATA_LBA_LO, lba & 0xFF);
     outb(ATA_LBA_MID, (lba >> 8) & 0xFF);

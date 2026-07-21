@@ -3,3 +3,6 @@ build/
 .workbuddy/
 1.txt
 __pycache__/
+tools/unifont.hex.gz
+build/
+src/user/ushell_blob.h

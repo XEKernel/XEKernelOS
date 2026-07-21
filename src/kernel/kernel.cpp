@@ -16,6 +16,7 @@
 #include "kernel/user.h"
 #include "kernel/task.h"
 #include "fs/fat12.h"
+#include "drivers/font_cn.h"
 #include "shell/shell.h"
 
 extern u32 _bss_start[], _bss_end[];
@@ -162,6 +163,8 @@ extern "C" void kernel_main(void) {
     serial_write_str("fat_init calling...\n");
     int f = fat_init();
     serial_write_str("fat_init done\n");
+    font_cn_load();
+    serial_write_str(font_cn_loaded ? "font_cn loaded\n" : "font_cn NOT loaded\n");
     if (f == 0) {
         gfx_set_fg(COLOR_LGREEN);
         gfx_puts("[OK] ");

@@ -1,5 +1,6 @@
 #include "drivers/keyboard.h"
 #include "drivers/gfx.h"
+#include "drivers/mouse.h"
 
 const char Keyboard::kbd_low_[] = {
     0,0,'1','2','3','4','5','6','7','8','9','0','-','=','\b','\t',
@@ -50,9 +51,12 @@ u8 Keyboard::read_scan() {
         u8 st = inb(KB_STATUS);
         if (st & 1) {
             u8 data = inb(KB_DATA);
-            if (st & 0x20) continue;
+            if (st & 0x20) { mouse.feed_byte(data); continue; }
             return data;
         }
+        /* Busy-wait without cli — feed_byte has its own pushf/popf
+         * atomic protection. Must run at full speed so PS/2 mouse
+         * data (up to 600 bytes/s) doesn't overflow the 1-byte buffer. */
     }
 }
 

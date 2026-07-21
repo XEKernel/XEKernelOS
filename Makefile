@@ -36,6 +36,7 @@ CXX_SRCS := $(SRCDIR)/kernel/kernel.cpp \
             $(SRCDIR)/drivers/ata.cpp \
             $(SRCDIR)/drivers/gfx.cpp \
             $(SRCDIR)/drivers/serial.cpp \
+            $(SRCDIR)/drivers/font_cn_load.cpp \
             $(SRCDIR)/fs/fat12.cpp \
             $(SRCDIR)/shell/shell.cpp \
             $(SRCDIR)/lib/heap.cpp \
@@ -65,7 +66,13 @@ TEST_ELF_ASM = $(SRCDIR)/user/test_elf.asm
 TEST_ELF_O   = $(BLDDIR)/test_elf.o
 TEST_ELF     = $(BLDDIR)/test_elf.elf
 
-all: $(IMG) $(HELLO_BIN) $(TEST_ELF)
+# User-space shell (embedded in kernel)
+USHELL_SRC   = $(SRCDIR)/user/ushell.cpp
+USHELL_ELF   = $(BLDDIR)/ushell.elf
+USHELL_BIN   = $(BLDDIR)/ushell.bin
+USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h
+
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR)
 
 $(BOOT_BIN): $(BOOT_SRC) | $(BLDDIR)
 	$(NASM) -f bin $< -o $@
@@ -108,6 +115,17 @@ $(TEST_ELF_O): $(TEST_ELF_ASM) | $(BLDDIR)
 $(TEST_ELF): $(TEST_ELF_O)
 	$(LD) $(LDFLAGS) -Ttext=0x400000 $< -o $@
 	@echo "  ELF test: $$(wc -c < $@)B"
+
+# User-space shell — compile & embed in kernel
+$(USHELL_ELF): $(USHELL_SRC) $(SRCDIR)/user/usys.h $(SRCDIR)/user/user.ld | $(BLDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR)/user -c $< -o $(BLDDIR)/ushell.o
+	$(LD) $(LDFLAGS) -T $(SRCDIR)/user/user.ld $(BLDDIR)/ushell.o -o $@
+
+$(USHELL_BIN): $(USHELL_ELF)
+	$(OBJCOPY) -O binary $< $@
+
+$(USHELL_HDR): $(USHELL_BIN)
+	python tools/binary_to_header.py $< ushell_blob > $@
 
 run: $(IMG)
 	qemu-system-i386 -fda $< -hda $(BLDDIR)/disk.img -m 32

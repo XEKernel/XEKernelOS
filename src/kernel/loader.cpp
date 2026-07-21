@@ -38,6 +38,7 @@ static int load_flat_binary(const char *path) {
 
     gfx_puts("Running user program...\n");
     enter_user_mode(USER_LOAD_ADDR, 0, nullptr);
+    gfx_putc('\n');
     return 0;
 }
 
@@ -102,6 +103,7 @@ static int load_elf_binary(const char *path) {
     kfree(buf);
     gfx_puts("Running ELF program...\n");
     enter_user_mode(entry, 0, nullptr);
+    gfx_putc('\n');
     return 0;
 }
 

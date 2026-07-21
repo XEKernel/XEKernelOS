@@ -29,12 +29,14 @@ extern "C" void syscall_handler(registers_t *r) {
         sys_write(r);
         break;
     case SYS_EXIT:
-        /* Restore kernel CR3 (in case user had its own page table) */
+        /* Restore kernel CR3 */
         PagingManager::get_kernel_paging()->load();
-        /* Restore kernel ESP to pre-enter_user_mode state.
-           The 'ret' unwinds: load_elf → load_binary → cmd_run → shell_loop */
+        /* g_entry_esp holds the saved EBP from enter_user_mode.
+           Return address is at [EBP+4]. Restore EBP:ESP → ret → shell. */
         __asm__ volatile(
-            "mov %0, %%esp\n"
+            "mov %0, %%ebp\n"
+            "mov 4(%%ebp), %%esp\n"  /* ESP = EBP + 4 → points to return addr */
+            "mov (%%ebp), %%ebp\n"   /* restore caller's EBP */
             "xor %%eax, %%eax\n"
             "ret\n"
             :

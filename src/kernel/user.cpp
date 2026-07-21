@@ -32,8 +32,8 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd) {
     (void)pd;
     (void)stack_top;
 
-    /* Save kernel ESP so SYS_EXIT can restore shell context */
-    __asm__ volatile("mov %%esp, %0" : "=m"(g_entry_esp));
+    /* Save EBP so SYS_EXIT can find the return address (at EBP+4) */
+    __asm__ volatile("mov %%ebp, %0" : "=m"(g_entry_esp));
 
     __asm__ volatile(
         "pushl $0x23\n"

@@ -26,6 +26,19 @@ static int load_flat_binary(const char *path) {
 
     u8 *dst = (u8 *)USER_LOAD_ADDR;
     for (int i = 0; i < sz; i++) dst[i] = buf[i];
+
+    /* Auto-append SYS_EXIT (mov $2, %eax; int $0x80) so flat binaries
+       that don't call it themselves still return to shell cleanly.
+       Assumes the binary leaves 7 bytes of padding at its end. */
+    if (sz + 7 < 65536) {
+        dst[sz+0] = 0xB8;  /* mov eax, 2 */
+        dst[sz+1] = 0x02;
+        dst[sz+2] = 0x00;
+        dst[sz+3] = 0x00;
+        dst[sz+4] = 0x00;
+        dst[sz+5] = 0xCD;  /* int 0x80 */
+        dst[sz+6] = 0x80;
+    }
     kfree(buf);
 
     serial_write_str("loader: loaded flat binary (");

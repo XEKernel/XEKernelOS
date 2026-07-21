@@ -337,8 +337,13 @@ int FatFilesystem::cd(const char *name) {
             if (!(e[11] & 0x10)) continue;
             if (e[0] == '.' && e[1] == '.' && e[2] == ' ') {
                 cur_dir_cluster_ = *(u16 *)(e + 26);
-                cur_dir_name_[0] = cur_dir_cluster_ ? '?' : 0;
-                cur_dir_name_[1] = 0;
+                /* Strip last path component from cur_dir_name_ */
+                char *p = cur_dir_name_;
+                char *last = p;
+                while (*p) { if (*p == '\\') last = p; p++; }
+                *last = 0;
+                if (cur_dir_name_[0] == 0 && cur_dir_cluster_ != 0)
+                    cur_dir_name_[0] = '?';
                 return 0;
             }
         }
@@ -364,7 +369,12 @@ int FatFilesystem::cd(const char *name) {
                 if (e[k] != fname[k]) { match = 0; break; }
             if (!match) continue;
             cur_dir_cluster_ = *(u16 *)(e + 26);
-            name83_to_str(e, cur_dir_name_);
+            /* Append subdirectory name to cur_dir_name_ */
+            int n = 0;
+            while (cur_dir_name_[n]) n++;
+            if (n == 0) cur_dir_name_[n++] = '\\';
+            else if (n > 0 && cur_dir_name_[n-1] != '\\') cur_dir_name_[n++] = '\\';
+            name83_to_str(e, cur_dir_name_ + n);
             return 0;
         }
     }
@@ -448,15 +458,16 @@ int FatFilesystem::cat(const char *name) {
 
 void FatFilesystem::cwd_str(char *out, int max) {
     if (max < 2) return;
-    if (cur_dir_cluster_ == 0 || cur_dir_name_[0] == 0) {
-        out[0] = '\\'; out[1] = 0;
-        return;
-    }
     int n = 0;
-    out[n++] = '\\';
-    for (int i = 0; cur_dir_name_[i] && n < max - 1; i++)
-        out[n++] = cur_dir_name_[i];
-    out[n] = 0;
+    if (cur_dir_name_[0] == 0) {
+        out[0] = '\\'; out[1] = 0;
+    } else {
+        while (cur_dir_name_[n] && n < max - 1) {
+            out[n] = cur_dir_name_[n];
+            n++;
+        }
+        out[n] = 0;
+    }
 }
 
 int FatFilesystem::rmdir(const char *name) {

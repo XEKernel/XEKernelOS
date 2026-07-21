@@ -18,6 +18,46 @@ entry:
     mov ss, ax
     mov sp, 0xFFFE
 
+    ; ---- Load kernel via extended INT 13h ----
+    movzx ecx, word [cs:0x1FFE]  ; kernel sectors (written by build_img.py)
+    test cx, cx
+    jz  .skip_kernel
+
+    ; DAP setup in stage2's data area
+    mov byte [cs:dap_size], 0x10
+    mov word [cs:dap_buf_seg], 0x2000
+    mov dword [cs:dap_lba], 17     ; kernel starts at LBA 17
+    mov word [cs:dap_buf_off], 0
+
+    ; Extended INT 13h supports up to 127 sectors per call.
+    ; Split large kernels into 127-sector chunks.
+.kload:
+    mov ax, cx
+    cmp ax, 127
+    jbe .last
+    mov ax, 127
+.last:
+    mov [cs:dap_count], ax
+
+    push cx
+    mov ah, 0x42
+    mov dl, 0x80
+    mov si, dap
+    int 0x13
+    pop cx
+    jc  boot_stop
+
+    sub cx, ax              ; remaining sectors
+    jz  .skip_kernel
+
+    ; Advance LBA and buffer offset
+    add [cs:dap_lba], eax
+    shl ax, 9               ; ax * 512 → bytes
+    add [cs:dap_buf_off], ax
+    jmp .kload
+
+.skip_kernel:
+
     ; VBE 模式 0x4144 (1024x768x32, QEMU/SeaBIOS)
     mov ax, 0x4F02
     mov bx, 0x4144
@@ -133,6 +173,20 @@ pm_entry:
 
     ; 跳转到 C 内核 (物理 0x20000)
     jmp 0x18:0x20000
+
+boot_stop:
+    cli
+    hlt
+    jmp boot_stop
+
+; Extended INT 13h Disk Address Packet (used by kernel loader)
+dap:
+dap_size:    db 0
+             db 0
+dap_count:   dw 0
+dap_buf_off: dw 0
+dap_buf_seg: dw 0
+dap_lba:     dq 0
 
 ; VBE 缓冲区
 vbe_info:  times 512 db 0

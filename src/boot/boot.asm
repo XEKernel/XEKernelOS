@@ -1,4 +1,4 @@
-; XEKernelOS MBR - Stage 1: load stage2 + kernel via extended INT 13h (LBA)
+; XEKernelOS MBR - load stage2 via extended INT 13h, kernel loaded by stage2
 [org 0x7c00]
 [bits 16]
 
@@ -14,7 +14,7 @@ real_start:
     mov ss, ax
     mov sp, 0x7C00
 
-    ; Check if extended INT 13h is supported
+    ; Check extended INT 13h support
     mov ah, 0x41
     mov bx, 0x55AA
     mov dl, 0x80
@@ -28,32 +28,14 @@ real_start:
     mov word [dap_count], 16
     mov word [dap_buf_seg], 0x1000
     mov word [dap_buf_off], 0
-    call disk_read
-
-    ; Load kernel chunk 1 (LBA 17, 64 sectors) → 0x20000
-    mov dword [dap_lba], 17
-    mov word [dap_count], 64
-    mov word [dap_buf_seg], 0x2000
-    mov word [dap_buf_off], 0
-    call disk_read
-
-    ; Load kernel chunk 2 (LBA 81, 64 sectors) → 0x20000 + 64*512 = 0x28000
-    mov dword [dap_lba], 81
-    mov word [dap_count], 64
-    mov word [dap_buf_seg], 0x2000
-    mov word [dap_buf_off], 0x8000
-    call disk_read
-
-    jmp 0x1000:0x0000
-
-disk_read:
     mov [dap_size], byte 0x10
     mov si, dap
     mov ah, 0x42
     mov dl, 0x80
     int 0x13
     jc  _err
-    ret
+
+    jmp 0x1000:0x0000
 
 _err:
     mov si, _msg
@@ -69,7 +51,6 @@ _hlt:cli
 
 _msg: db "ERR: Disk!", 0
 
-; Disk Address Packet
 dap:
 dap_size:    db 0
              db 0

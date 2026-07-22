@@ -83,6 +83,10 @@ int task_create(void (*entry)(void *), void *arg) {
     t->boost_expire = 0;
     t->caps = CAP_ALL;
     t->output_fd = -1;
+    for (int i = 0; i < MAX_FD; i++) {
+        t->fd_buf[i] = nullptr; t->fd_size[i] = 0;
+        t->fd_pos[i] = 0; t->fd_type[i] = 0;
+    }
     list_add_tail(&t->list, &ready_queue);
 
     return t->pid;
@@ -148,6 +152,10 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->boost_expire = 0;
     t->caps = (current_task ? current_task->caps : CAP_ALL); /* 准则四: inherit */
     t->output_fd = -1;
+    for (int i = 0; i < MAX_FD; i++) {
+        t->fd_buf[i] = nullptr; t->fd_size[i] = 0;
+        t->fd_pos[i] = 0; t->fd_type[i] = 0;
+    }
     list_add_tail(&t->sibling, &current_task->children);
     list_add_tail(&t->list, &ready_queue);
 
@@ -183,6 +191,11 @@ void task_start_user(void) {
 }
 
 void task_exit(void) {
+    if (!current_task) return;
+
+    /* Mark DEAD and remove from ready queue.
+       Do NOT free kernel_stack or current_task here — we're still
+       running on this stack! Cleanup is handled in schedule(). */
     current_task->state = TASK_DEAD;
     list_del(&current_task->list);
 
@@ -195,18 +208,12 @@ void task_exit(void) {
         }
     }
 
-    /* Free user page directory (not kernel's) */
-    if (current_task->paging && current_task->paging != PagingManager::get_kernel_paging()) {
-        delete current_task->paging;
-    }
-
-    kfree((void *)current_task->kernel_stack);
-    kfree(current_task);
-
-    /* Switch back to kernel page table and reschedule */
+    /* Switch back to kernel page table (safe: we're still on kernel stack) */
     PagingManager::get_kernel_paging()->load();
 
-    /* Build a fake interrupt frame on the kernel stack to call schedule */
+    /* Build a minimal interrupt frame and yield to scheduler.
+       schedule() will see TASK_DEAD, skip it, and free resources
+       from the NEXT task's stack. */
     registers_t fake;
     fake.eflags = 0x202;
     fake.eip = 0;
@@ -214,7 +221,7 @@ void task_exit(void) {
     __asm__ volatile("mov %%esp, %0" : "=m"(fake._esp));
     schedule(&fake);
 
-    /* Should never reach here — schedule() switches away */
+    /* Should never reach here */
     for (;;) __asm__ volatile("hlt");
 }
 
@@ -224,6 +231,21 @@ void task_yield(void) {
 
 void schedule(registers_t *r) {
     if (!current_task) return;
+
+    /* ---- Clean up zombie (DEAD) tasks first — safe: new stack context ---- */
+    {
+        struct list_head *pos, *tmp;
+        list_for_each_safe(pos, tmp, &ready_queue) {
+            struct task_struct *t = container_of(pos, struct task_struct, list);
+            if (t->state == TASK_DEAD) {
+                list_del(pos);
+                if (t->paging && t->paging != PagingManager::get_kernel_paging())
+                    delete t->paging;
+                kfree((void *)t->kernel_stack);
+                kfree(t);
+            }
+        }
+    }
 
     /* Save current task context */
     current_task->ecx = r->ecx;

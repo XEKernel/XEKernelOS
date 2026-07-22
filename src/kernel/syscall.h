@@ -44,6 +44,8 @@
 #define SYS_RD_LIST    41
 #define SYS_RD_REMOVE  42
 #define SYS_DROP_CAP   43
+#define SYS_DISK_READ  44
+#define SYS_DISK_WRITE 45
 
 #ifdef __cplusplus
 extern "C" {

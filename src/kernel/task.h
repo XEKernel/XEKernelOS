@@ -22,6 +22,8 @@ class PagingManager;  /* forward declaration */
 #define CAP_ALL          (CAP_DISK_READ | CAP_DISK_WRITE | CAP_SCREEN | \
                           CAP_SHUTDOWN | CAP_SIGNAL | CAP_SYSCALL)
 
+#define MAX_FD 16
+
 struct task_struct {
     u32 pid;
     u32 ecx, edx, ebx, ebp, esi, edi;
@@ -48,6 +50,12 @@ struct task_struct {
 
     /* ---- 准则一：per-task output redirect ---- */
     int  output_fd;       /* -1=screen, >=0=FD for gfx output redirect */
+
+    /* ---- FD table (准则二: per-task, was global V18) ---- */
+    u8  *fd_buf[MAX_FD];
+    u32  fd_size[MAX_FD];
+    u32  fd_pos[MAX_FD];
+    u8   fd_type[MAX_FD];
 
     /* Signal support */
     u32 pending_signals;

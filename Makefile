@@ -76,7 +76,7 @@ TEST_ELF_O   = $(BLDDIR)/test_elf.o
 TEST_ELF     = $(BLDDIR)/test_elf.elf
 
 # User-space shell (embedded in kernel)
-USHELL_SRC   = $(SRCDIR)/user/ushell.cpp
+USHELL_SRC   = $(SRCDIR)/user/ushell.cpp $(SRCDIR)/user/ufs.cpp
 USHELL_ELF   = $(BLDDIR)/ushell.elf
 USHELL_BIN   = $(BLDDIR)/ushell.bin
 USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h

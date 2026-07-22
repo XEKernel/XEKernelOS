@@ -83,6 +83,7 @@ int  task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd);
 void task_start_user(void);   /* switch to user mode via direct iretd */
 void task_launch_user(void);   /* save current, build 5-entry iretd to ring3 */
 void task_exit(void);
+void task_cleanup_user(void);  /* cleanup user task after SYS_EXIT, restore idle */
 void task_yield(void);
 void schedule(registers_t *r);
 u32  task_next_pid(void);

@@ -62,6 +62,7 @@ void Keyboard::init() {
 }
 
 u8 Keyboard::read_scan() {
+    int spin = 0;
     for (;;) {
         /* Check ring buffer for bytes saved by PIT's ctrl_c */
         if (kb_head_ != kb_tail_) return kb_get();
@@ -71,9 +72,13 @@ u8 Keyboard::read_scan() {
             if (st & 0x20) { mouse.feed_byte(data); continue; }
             return data;
         }
-        /* Busy-wait without cli — feed_byte has its own pushf/popf
-         * atomic protection. Must run at full speed so PS/2 mouse
-         * data (up to 600 bytes/s) doesn't overflow the 1-byte buffer. */
+        /* Update mouse cursor by polling — PIT is blocked during
+           syscalls (int 0x80 gate clears IF), so mcursor_update()
+           never fires from ISR. Poll every ~50000 iterations (~5ms). */
+        if (++spin > 50000) {
+            spin = 0;
+            gfx.mcursor_update();
+        }
     }
 }
 

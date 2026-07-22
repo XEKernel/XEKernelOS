@@ -88,6 +88,13 @@ void GfxDriver::draw_char(int sx, int sy, char c, u8 fg, u8 bg) {
 }
 
 void GfxDriver::scroll() {
+    /* Disable interrupts during scroll to prevent PIT ISR from
+       calling mcursor_update() (XOR framebuffer) in the middle
+       of the byte-by-byte memmove, which would leave visual artifacts.
+       Use pushf/popf to preserve the previous IF state — if scroll
+       is called during a syscall (IF already cleared by interrupt gate),
+       we must not re-enable interrupts prematurely. */
+    __asm__ volatile("pushf; cli");
     int line_h = FONT_H;
     int bytes  = pitch_ * line_h;
     for (int row = 1; row < rows_; row++) {
@@ -98,6 +105,7 @@ void GfxDriver::scroll() {
     fill_rect(0, (rows_ - 1) * line_h, w_, line_h, bg_);
     cy_ = rows_ - 1;
     cx_ = 0;
+    __asm__ volatile("popf");
 }
 
 void GfxDriver::putc(char c) {

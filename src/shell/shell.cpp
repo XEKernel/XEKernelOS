@@ -375,7 +375,15 @@ static void cmd_usersh(void) {
     enter_user_mode(0x400000, stack_top, user_pd, 0, nullptr);
 
     /* User task exited (SYS_EXIT restored g_entry_esp).
-       Re-enable interrupts. */
+       Clean up the user task — otherwise current_task still points
+       to it, and PIT→schedule() will context-switch to the stale
+       task's kernel stack, corrupting state and causing:
+       - kernel shell freeze after USERSH exit
+       - screen overflow → black screen + hang
+       - mouse cursor only moves on Enter (PIT IRQ path broken) */
+    task_cleanup_user();
+
+    /* Re-enable interrupts. */
     __asm__ volatile("sti");
     shell_redraw();
     gfx_putc('\n');

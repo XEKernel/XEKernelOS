@@ -107,11 +107,9 @@ void Mouse::feed_byte(u8 data) {
         int dx = (b & 0x10) ? (int)(pkt_[1] | 0xFFFFFF00) : (int)pkt_[1];
         int dy = (b & 0x20) ? (int)(pkt_[2] | 0xFFFFFF00) : (int)pkt_[2];
 
-        /* Apply sensitivity multiplier + light acceleration */
-        dx *= 3;
-        dy *= 3;
-        if (dx > 32 || dx < -32) { dx = (dx * 3) / 2; }
-        if (dy > 32 || dy < -32) { dy = (dy * 3) / 2; }
+        /* Apply sensitivity: 1x base + light acceleration for fast moves */
+        if (dx > 4 || dx < -4) { dx = (dx * 3) / 2; }
+        if (dy > 4 || dy < -4) { dy = (dy * 3) / 2; }
 
         mx_ += dx;
         my_ -= dy;   /* PS/2 Y is inverted */

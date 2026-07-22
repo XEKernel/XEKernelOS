@@ -46,6 +46,12 @@
 #define SYS_DROP_CAP   43
 #define SYS_DISK_READ  44
 #define SYS_DISK_WRITE 45
+#define SYS_IOCTL      46
+#define SYS_EXEC_FD    47
+
+/* ioctl commands for fd type 4 (framebuffer) */
+#define IOCTL_GFX_SET_FG  1
+#define IOCTL_GFX_CLS     2
 
 #ifdef __cplusplus
 extern "C" {

@@ -49,6 +49,8 @@ extern "C" {
 #define SYS_DROP_CAP   43
 #define SYS_DISK_READ  44
 #define SYS_DISK_WRITE 45
+#define SYS_IOCTL      46
+#define SYS_EXEC_FD    47
 
 static inline int syscall4(int num, int a1, int a2, int a3) {
     int ret;

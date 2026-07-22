@@ -29,6 +29,7 @@ void task_init(void) {
     main_task->user_stack = 0;
     main_task->parent = nullptr;
     main_task->exit_code = 0;
+    main_task->caps = CAP_ALL;  /* kernel shell has all privileges */
     list_init(&main_task->children);
     current_task = main_task;
 }
@@ -156,6 +157,9 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
         t->fd_buf[i] = nullptr; t->fd_size[i] = 0;
         t->fd_pos[i] = 0; t->fd_type[i] = 0;
     }
+    /* fd 0 = stdout (framebuffer) — 准则一: 万物皆 fd */
+    t->fd_buf[0]  = (u8 *)1;  /* sentinel (non-null) */
+    t->fd_type[0] = 4;        /* framebuffer type */
     list_add_tail(&t->sibling, &current_task->children);
     list_add_tail(&t->list, &ready_queue);
 
@@ -223,6 +227,37 @@ void task_exit(void) {
 
     /* Should never reach here */
     for (;;) __asm__ volatile("hlt");
+}
+
+/* Clean up the current user task and restore the idle task.
+   Called from cmd_usersh() after enter_user_mode() returns
+   (i.e., SYS_EXIT restored g_entry_esp). Without this cleanup,
+   current_task still points to the exited user task, causing:
+   - PIT ISR calls task_boost_priority() on stale task
+   - schedule() context-switches to stale task → crash/black screen
+   - mcursor_update() appears frozen because PIT IRQ never returns
+     cleanly after schedule() corrupts the stack */
+void task_cleanup_user(void) {
+    if (!current_task || current_task->pid == 0) return;
+
+    /* Remove from ready queue and sibling list */
+    list_del(&current_task->list);
+    if (current_task->parent)
+        list_del(&current_task->sibling);
+
+    /* Free user page directory (PD + page tables).
+       Do NOT free the identity-mapped physical pages — they
+       belong to the kernel PSE identity map. */
+    if (current_task->paging && current_task->paging != PagingManager::get_kernel_paging())
+        delete current_task->paging;
+
+    /* Free kernel stack */
+    if (current_task->kernel_stack)
+        kfree((void *)current_task->kernel_stack);
+
+    /* Free task struct and restore idle task */
+    kfree(current_task);
+    current_task = main_task;
 }
 
 void task_yield(void) {

@@ -44,6 +44,11 @@ extern "C" void c_isr_handler(registers_t *r) {
         }
         if (current_task && current_task->pid != 0)
             task_boost_priority(current_task->pid, 1);
+        /* Mouse cursor update — safe in both kernel and user mode:
+           all text output from ring3 goes through int 0x80 syscalls,
+           whose interrupt gate (flags 0xEE) clears IF, so PIT cannot
+           fire during framebuffer writes. XOR cursor and text output
+           are mutually exclusive. */
         gfx.mcursor_update();
 
         /* Only reschedule when NOT in ring3 — ring3 tasks have a separate

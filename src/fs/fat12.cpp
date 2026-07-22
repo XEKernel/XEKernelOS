@@ -298,10 +298,10 @@ int FatFilesystem::dir() {
             name83_to_str(e, name);
             if (e[11] & 0x10) {
                 gfx_set_fg(COLOR_LCYAN);
-                gfx_puts("DIR ");
+                gfx_puts("DIR  ");
             } else {
                 gfx_set_fg(COLOR_LGRAY);
-                gfx_puts("    ");
+                gfx_puts("     ");
             }
             u32 sz = *(u32 *)(e + 28);
             char ss[10]; int p = 8;
@@ -310,8 +310,39 @@ int FatFilesystem::dir() {
             if (!t) { ss[8] = '0'; }
             else while (t && p >= 0) { ss[p--] = '0' + (t % 10); t /= 10; }
             gfx_set_fg(COLOR_DGRAY);
-            gfx_puts(ss); gfx_putc(' ');
+            gfx_puts(ss);
+
+            /* Timestamp */
+            u16 fat_time = e[22] | (e[23] << 8);
+            u16 fat_date = e[24] | (e[25] << 8);
+            if (fat_date || fat_time) {
+                int hour = (fat_time >> 11) & 0x1F;
+                int min  = (fat_time >> 5)  & 0x3F;
+                int year = 1980 + ((fat_date >> 9) & 0x7F);
+                int mon  = (fat_date >> 5) & 0x0F;
+                int day  = fat_date & 0x1F;
+                char ts[18];
+                int ti = 0;
+                ts[ti++] = '0' + (year / 1000);
+                ts[ti++] = '0' + ((year / 100) % 10);
+                ts[ti++] = '0' + ((year / 10) % 10);
+                ts[ti++] = '0' + (year % 10);
+                ts[ti++] = '-';
+                ts[ti++] = '0' + (mon / 10); ts[ti++] = '0' + (mon % 10);
+                ts[ti++] = '-';
+                ts[ti++] = '0' + (day / 10); ts[ti++] = '0' + (day % 10);
+                ts[ti++] = ' ';
+                ts[ti++] = '0' + (hour / 10); ts[ti++] = '0' + (hour % 10);
+                ts[ti++] = ':';
+                ts[ti++] = '0' + (min / 10); ts[ti++] = '0' + (min % 10);
+                ts[ti] = 0;
+                gfx_set_fg(COLOR_YELLOW);
+                gfx_putc(' ');
+                gfx_puts(ts);
+            }
+
             gfx_set_fg(COLOR_WHITE);
+            gfx_putc(' ');
             gfx_puts(name); gfx_putc('\n');
             gfx_set_fg(COLOR_LGRAY);
         }

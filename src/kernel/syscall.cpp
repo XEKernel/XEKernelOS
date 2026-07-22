@@ -75,6 +75,14 @@ static void sys_fwrite(registers_t *r) {
         return;
     }
 
+    if (typ == 4) {  /* framebuffer stdout (准则一) */
+        /* Use puts_utf8 to handle multi-byte UTF-8 sequences.
+           The string from user space may contain CJK characters. */
+        gfx.puts_utf8(str);
+        r->eax = len;
+        return;
+    }
+
     r->eax = (u32)-1;
 }
 
@@ -389,6 +397,81 @@ static void sys_exec(registers_t *r) {
     r->ebp = 0; r->esi = 0; r->edi = 0;
 }
 
+/* exec_fd(fd) — 准则五: 用户态 open 文件→传 fd，内核不解析路径 */
+static void sys_exec_fd(registers_t *r) {
+    u32 fd = r->ebx;
+    if (fd >= MAX_FD || !current_task->fd_buf[fd]) { r->eax = (u32)-1; return; }
+    if (current_task->fd_type[fd] != 1) { r->eax = (u32)-1; return; }  /* must be a file */
+
+    u8 *data = current_task->fd_buf[fd];
+    u32 sz   = current_task->fd_size[fd];
+    if (sz == 0 || sz > 65536) { r->eax = (u32)-1; return; }
+
+    /* Replace current task's address space */
+    PagingManager *old_pd = current_task->paging;
+    if (old_pd && old_pd != PagingManager::get_kernel_paging())
+        delete old_pd;
+
+    PagingManager *new_pd = new PagingManager();
+    current_task->paging = new_pd;
+
+    /* Load flat binary to new physical pages at 0x400000 */
+    u32 load_addr = 0x400000;
+    u32 entry = 0x400000;
+    u32 code_pages = (sz + 0xFFF) / 0x1000;
+    for (u32 i = 0; i < code_pages; i++) {
+        u32 phys = mm_alloc_page();
+        if (!phys) { r->eax = (u32)-1; return; }
+        u32 chunk = sz - i * 0x1000;
+        if (chunk > 0x1000) chunk = 0x1000;
+        u8 *d = (u8 *)phys;
+        for (u32 k = 0; k < chunk; k++)
+            d[k] = data[i * 0x1000 + k];
+        new_pd->map_page(load_addr + i * 0x1000, phys, PT_FLAGS);
+    }
+
+    /* Map user stack: 0x410000–0x420000 (64KB) */
+    u32 stack_top = 0x420000;
+    u32 stack_base = stack_top - 0x10000;
+    for (u32 va = stack_base; va < stack_top; va += 0x1000) {
+        u32 phys = mm_alloc_page();
+        if (!phys) { r->eax = (u32)-1; return; }
+        new_pd->map_page(va, phys, PT_FLAGS);
+    }
+
+    /* Build iret frame on kernel stack */
+    u32 *csp = (u32 *)(current_task->kernel_stack + 4096);
+    *(--csp) = 0x23;         /* SS */
+    *(--csp) = stack_top;    /* ESP */
+    *(--csp) = 0x202;        /* EFLAGS */
+    *(--csp) = 0x2B;         /* CS */
+    *(--csp) = entry;        /* EIP */
+    *(--csp) = 0;            /* err_code */
+    *(--csp) = 0x20;         /* vec */
+    *(--csp) = 0;            /* eax */
+    *(--csp) = 0;            /* ecx */
+    *(--csp) = 0;            /* edx */
+    *(--csp) = 0;            /* ebx */
+    csp--;
+    *csp = (u32)(csp - 3);   /* _esp */
+    *(--csp) = 0;            /* ebp */
+    *(--csp) = 0;            /* esi */
+    *(--csp) = 0;            /* edi */
+
+    current_task->eip = entry;
+    current_task->esp = (u32)csp;
+    current_task->eflags = 0x202;
+    current_task->user_stack = stack_top;
+
+    /* Rewrite our own interrupt frame so we jump to new program on iret */
+    r->eip = entry;
+    r->cs = 0x2B;
+    r->eflags = 0x202;
+    r->eax = 0;
+    r->ecx = 0; r->edx = 0; r->ebx = 0;
+    r->ebp = 0; r->esi = 0; r->edi = 0;
+}
+
 static void sys_waitpid(registers_t *r) {
     /* Block until a child exits */
     struct list_head *pos;
@@ -443,7 +526,7 @@ static void sys_close(registers_t *r) {
         pipe->broken = true;  /* one end closed → pipe broken */
         if (pipe->refs <= 0)
             kfree(pipe);
-    } else {
+    } else if (current_task->fd_type[fd] != 4) {  /* skip sentinel fds (fb) */
         kfree(current_task->fd_buf[fd]);
     }
 
@@ -697,6 +780,30 @@ static void sys_rd_remove(registers_t *r) {
     r->eax = (u32)rd_remove(name);
 }
 
+/* ioctl for fd type 4 (framebuffer) — 准则一 */
+static void sys_ioctl(registers_t *r) {
+    u32 fd  = r->ebx;
+    u32 cmd = r->ecx;
+    u32 arg = r->edx;
+
+    if (fd >= MAX_FD || !current_task->fd_buf[fd]) { r->eax = (u32)-1; return; }
+    if (current_task->fd_type[fd] != 4) { r->eax = (u32)-1; return; }
+
+    switch (cmd) {
+    case IOCTL_GFX_SET_FG:
+        gfx.set_fg((u8)arg);
+        r->eax = 0;
+        break;
+    case IOCTL_GFX_CLS:
+        gfx.clear((u8)arg);
+        r->eax = 0;
+        break;
+    default:
+        r->eax = (u32)-1;
+        break;
+    }
+}
+
 extern "C" void syscall_handler(registers_t *r) {
 
     switch (r->eax) {
@@ -734,7 +841,7 @@ extern "C" void syscall_handler(registers_t *r) {
                 pipe->refs--;
                 pipe->broken = true;
                 if (pipe->refs <= 0) kfree(pipe);
-            } else {
+            } else if (current_task->fd_type[i] != 4) {  /* skip sentinel fds */
                 kfree(current_task->fd_buf[i]);
             }
             current_task->fd_buf[i] = nullptr;
@@ -847,6 +954,13 @@ extern "C" void syscall_handler(registers_t *r) {
             for (int i = 0; i < 512; i++) kwbuf[i] = ubuf[i];
             r->eax = (u32)ata_write((u32)r->ebx, 1, (const u16 *)kwbuf);
         }
+        break;
+    case SYS_IOCTL:
+        sys_ioctl(r);
+        break;
+    case SYS_EXEC_FD:
+        sys_exec_fd(r);
+        break;
     default:
         r->eax = (u32)-1;
         break;

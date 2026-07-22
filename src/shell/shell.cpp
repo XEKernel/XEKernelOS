@@ -336,6 +336,11 @@ static void cmd_shutdown(void) {
 }
 
 static void cmd_usersh(void) {
+    /* Disable interrupts to prevent PIT from preempting and switching
+       to user_task through the scheduler (which skips enter_user_mode
+       and leaves g_entry_esp uninitialized). */
+    __asm__ volatile("cli");
+
     /* Copy embedded user-shell binary to user-space load address */
     u8 *dst = (u8 *)0x400000;
     for (u32 i = 0; i < ushell_blob_len; i++)
@@ -360,12 +365,17 @@ static void cmd_usersh(void) {
     /* Create task_struct so PIT preemption can save/restore context */
     task_create_user((void *)0x400000, stack_top, user_pd);
 
-    /* Enter ring3 via direct 5-entry iretd (scheduler handles preemption
-       once the task is running; direct iretd avoids the ring0→ring3
-       stack frame mismatch in schedule()) */
+    /* Set task state to TASK_RUNNING since we're about to enter it
+       directly via iretd (not through the scheduler). */
+    if (current_task)
+        current_task->state = TASK_RUNNING;
+
+    /* Enter ring3 via direct 5-entry iretd */
     enter_user_mode(0x400000, stack_top, user_pd, 0, nullptr);
 
-    /* User task exited (SYS_EXIT restored g_entry_esp) */
+    /* User task exited (SYS_EXIT restored g_entry_esp).
+       Re-enable interrupts. */
+    __asm__ volatile("sti");
     shell_redraw();
     gfx_putc('\n');
 }

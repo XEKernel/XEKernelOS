@@ -149,10 +149,10 @@ $(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) tools/mkdisk.py
 disk-img: $(DISK_IMG)
 
 run: $(IMG) $(DISK_IMG)
-	qemu-system-i386 -fda $< -hda $(DISK_IMG) -m 32
+	qemu-system-i386 -hda $(IMG) -hdb $(DISK_IMG) -m 32 -boot order=c -serial stdio
 
 run-debug: $(IMG) $(DISK_IMG)
-	qemu-system-i386 -fda $< -hda $(DISK_IMG) -monitor stdio -d cpu_reset,int -m 32
+	qemu-system-i386 -hda $(IMG) -hdb $(DISK_IMG) -m 32 -boot order=c -serial stdio -monitor stdio -d cpu_reset,int
 
 clean:
 	rm -rf $(BLDDIR)

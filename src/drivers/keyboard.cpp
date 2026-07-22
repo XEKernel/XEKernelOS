@@ -1,6 +1,7 @@
 #include "drivers/keyboard.h"
 #include "drivers/gfx.h"
 #include "drivers/mouse.h"
+#include "drivers/serial.h"
 
 const char Keyboard::kbd_low_[] = {
     0,0,'1','2','3','4','5','6','7','8','9','0','-','=','\b','\t',
@@ -68,6 +69,9 @@ u8 Keyboard::read_scan() {
         if (st & 1) {
             u8 data = inb(KB_DATA);
             if (st & 0x20) { mouse.feed_byte(data); continue; }
+            serial_write_char('K');
+            serial_write_char("0123456789ABCDEF"[data>>4]);
+            serial_write_char("0123456789ABCDEF"[data&15]);
             return data;
         }
         /* Busy-wait without cli — feed_byte has its own pushf/popf

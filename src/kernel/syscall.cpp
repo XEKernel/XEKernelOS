@@ -12,11 +12,13 @@
 #include "lib/heap.h"
 #include "lib/ports.h"
 
-#define MAX_FD 4
+#define MAX_FD 16
 
 /* File descriptor table */
 static u8  *fd_buf[MAX_FD] = {nullptr};
 static u32  fd_size[MAX_FD] = {0};
+static u32  fd_pos[MAX_FD]  = {0};    /* current read/write position */
+static u8   fd_type[MAX_FD] = {0};    /* 0=unused, 1=file, 2=pipe */
 
 /* Heap break — starts at 0x10000000 (PDE 64, clear of kernel PDEs) */
 static u32 user_break = 0x10000000;
@@ -33,10 +35,12 @@ static void sys_write(registers_t *r) {
 static void sys_read(registers_t *r) {
     char *buf = (char *)r->ebx;
     int max = (int)r->ecx;
+
     if (max <= 0 || max > 4096 || !buf) { r->eax = 0; return; }
     kb_readline(buf, max - 1);
     buf[max - 1] = 0;
     int n = 0; while (buf[n]) n++;
+    __asm__ volatile("wbinvd");  /* flush caches for PSE→4KB page coherency */
     r->eax = n;
 }
 
@@ -59,6 +63,8 @@ static void sys_open(registers_t *r) {
 
     fd_buf[fd] = fb;
     fd_size[fd] = (u32)sz;
+    fd_pos[fd] = 0;
+    fd_type[fd] = 1;  /* file */
     r->eax = fd;
 }
 
@@ -68,9 +74,11 @@ static void sys_fread(registers_t *r) {
     u32 len = r->edx;
 
     if (fd >= MAX_FD || !fd_buf[fd] || !buf) { r->eax = (u32)-1; return; }
-    if (len > fd_size[fd]) len = fd_size[fd];
+    u32 remain = fd_size[fd] - fd_pos[fd];
+    if (len > remain) len = remain;
     if (len > 4096) len = 4096;
-    for (u32 i = 0; i < len; i++) buf[i] = fd_buf[fd][i];
+    for (u32 i = 0; i < len; i++) buf[i] = fd_buf[fd][fd_pos[fd] + i];
+    fd_pos[fd] += len;
     r->eax = len;
 }
 
@@ -237,7 +245,7 @@ static void sys_exec(registers_t *r) {
     const char *path = (const char *)r->ebx;
     if (!path) { r->eax = (u32)-1; return; }
 
-    /* Read ELF binary */
+    /* Read binary from disk */
     u8 *elf_buf = (u8 *)kmalloc(65536);
     if (!elf_buf) { r->eax = (u32)-1; return; }
     int sz = fat.read_file(path, elf_buf, 65536);
@@ -251,28 +259,36 @@ static void sys_exec(registers_t *r) {
     PagingManager *new_pd = new PagingManager();
     current_task->paging = new_pd;
 
-    /* Load ELF into new address space */
-    /* Simple flat binary: load at 0x400000, stack at 0x9E000 */
+    /* Load flat binary: copy to new physical pages at 0x400000 */
     u32 load_addr = 0x400000;
     u32 entry = 0x400000;
-    for (u32 i = 0; i < (u32)sz; i += 0x1000) {
+    u32 code_pages = (sz + 0xFFF) / 0x1000;
+    for (u32 i = 0; i < code_pages; i++) {
         u32 phys = mm_alloc_page();
         if (!phys) { kfree(elf_buf); r->eax = (u32)-1; return; }
-        u32 chunk = (u32)sz - i;
+        u32 chunk = sz - i * 0x1000;
         if (chunk > 0x1000) chunk = 0x1000;
-        u32 *d = (u32 *)phys;
+        u8 *d = (u8 *)phys;
         for (u32 k = 0; k < chunk; k++)
-            ((u8 *)d)[k] = elf_buf[i + k];
-        new_pd->map_page(load_addr + i, phys, PT_FLAGS);
+            d[k] = elf_buf[i * 0x1000 + k];
+        new_pd->map_page(load_addr + i * 0x1000, phys, PT_FLAGS);
+    }
+
+    /* Map user stack: 0x410000–0x420000 (64KB) */
+    u32 stack_top = 0x420000;
+    u32 stack_base = stack_top - 0x10000;
+    for (u32 va = stack_base; va < stack_top; va += 0x1000) {
+        u32 phys = mm_alloc_page();
+        if (!phys) { kfree(elf_buf); r->eax = (u32)-1; return; }
+        new_pd->map_page(va, phys, PT_FLAGS);
     }
 
     kfree(elf_buf);
 
-    /* Update task context for new program */
+    /* Build new iret frame on kernel stack */
     u32 *csp = (u32 *)(current_task->kernel_stack + 4096);
-    /* Build new iret frame: user mode, new entry point */
     *(--csp) = 0x23;         /* SS */
-    *(--csp) = 0x9E000;      /* ESP */
+    *(--csp) = stack_top;    /* ESP */
     *(--csp) = 0x202;        /* EFLAGS */
     *(--csp) = 0x2B;         /* CS */
     *(--csp) = entry;        /* EIP */
@@ -291,7 +307,7 @@ static void sys_exec(registers_t *r) {
     current_task->eip = entry;
     current_task->esp = (u32)csp;
     current_task->eflags = 0x202;
-    current_task->user_stack = 0x9E000;
+    current_task->user_stack = stack_top;
 
     /* Rewrite our own interrupt frame so we jump to new program on iret */
     r->eip = entry;
@@ -351,6 +367,100 @@ static void sys_close(registers_t *r) {
     kfree(fd_buf[fd]);
     fd_buf[fd] = nullptr;
     fd_size[fd] = 0;
+    fd_pos[fd] = 0;
+    fd_type[fd] = 0;
+    r->eax = 0;
+}
+
+static void sys_lseek(registers_t *r) {
+    u32 fd = r->ebx;
+    int offset = (int)r->ecx;
+    int whence = (int)r->edx;
+    if (fd >= MAX_FD || !fd_buf[fd]) { r->eax = (u32)-1; return; }
+    u32 new_pos;
+    if (whence == 0) new_pos = (u32)offset;
+    else if (whence == 1) new_pos = fd_pos[fd] + (u32)offset;
+    else if (whence == 2) new_pos = fd_size[fd] + (u32)offset;
+    else { r->eax = (u32)-1; return; }
+    if (new_pos > fd_size[fd]) new_pos = fd_size[fd];
+    fd_pos[fd] = new_pos;
+    r->eax = new_pos;
+}
+
+static void sys_stat(registers_t *r) {
+    const char *path = (const char *)r->ebx;
+    u32 *buf = (u32 *)r->ecx; /* {size, flags(0=file,1=dir), 0, 0} */
+    if (!path || !buf) { r->eax = (u32)-1; return; }
+    int sz, is_dir;
+    sz = fat.stat(path, &is_dir);
+    if (sz < 0) { r->eax = (u32)-1; return; }
+    buf[0] = (u32)sz;
+    buf[1] = is_dir ? 1u : 0u;
+    buf[2] = 0;
+    buf[3] = 0;
+    r->eax = 0;
+}
+
+static void sys_dup(registers_t *r) {
+    u32 old_fd = r->ebx;
+    if (old_fd >= MAX_FD || !fd_buf[old_fd]) { r->eax = (u32)-1; return; }
+    /* Find lowest free fd */
+    int new_fd = -1;
+    for (int i = 0; i < MAX_FD; i++) {
+        if (!fd_buf[i]) { new_fd = i; break; }
+    }
+    if (new_fd < 0) { r->eax = (u32)-1; return; }
+    fd_buf[new_fd] = fd_buf[old_fd];
+    fd_size[new_fd] = fd_size[old_fd];
+    fd_pos[new_fd] = fd_pos[old_fd];
+    fd_type[new_fd] = fd_type[old_fd];
+    r->eax = new_fd;
+}
+
+static void sys_dup2(registers_t *r) {
+    u32 old_fd = r->ebx;
+    u32 new_fd = r->ecx;
+    if (old_fd >= MAX_FD || new_fd >= MAX_FD || !fd_buf[old_fd]) {
+        r->eax = (u32)-1; return;
+    }
+    if (old_fd == new_fd) { r->eax = new_fd; return; }
+    /* Close new_fd if open */
+    if (fd_buf[new_fd]) { kfree(fd_buf[new_fd]); }
+    fd_buf[new_fd] = fd_buf[old_fd];
+    fd_size[new_fd] = fd_size[old_fd];
+    fd_pos[new_fd] = fd_pos[old_fd];
+    fd_type[new_fd] = fd_type[old_fd];
+    r->eax = new_fd;
+}
+
+/* Pipe: read_fd (ebx) and write_fd (ecx) returned via user-provided pointers */
+static void sys_pipe(registers_t *r) {
+    u32 *fds = (u32 *)r->ebx;  /* int fds[2] */
+    if (!fds) { r->eax = (u32)-1; return; }
+    /* Allocate a shared buffer for the pipe */
+    u8 *pbuf = (u8 *)kmalloc(4096);
+    if (!pbuf) { r->eax = (u32)-1; return; }
+    /* Find two free FDs */
+    int rfd = -1, wfd = -1;
+    for (int i = 0; i < MAX_FD; i++) {
+        if (!fd_buf[i]) {
+            if (rfd < 0) rfd = i;
+            else if (wfd < 0) { wfd = i; break; }
+        }
+    }
+    if (wfd < 0) { kfree(pbuf); r->eax = (u32)-1; return; }
+    /* Both FDs share the same buffer.
+       type=2 for the read end, type=3 for the write end */
+    fd_buf[rfd] = pbuf;
+    fd_size[rfd] = 4096;
+    fd_pos[rfd] = 0;
+    fd_type[rfd] = 2;  /* pipe read */
+    fd_buf[wfd] = pbuf;
+    fd_size[wfd] = 4096;
+    fd_pos[wfd] = 0;
+    fd_type[wfd] = 3;  /* pipe write */
+    fds[0] = rfd;
+    fds[1] = wfd;
     r->eax = 0;
 }
 
@@ -451,6 +561,49 @@ extern "C" void syscall_handler(registers_t *r) {
             : "m"(g_entry_esp)
         );
         __builtin_unreachable();
+    case SYS_GETPID:
+        if (current_task)
+            r->eax = current_task->pid;
+        else
+            r->eax = (u32)-1;
+        break;
+    case SYS_KILL:
+        /* Send signal to target PID. SIGKILL is immediate, others pend. */
+        r->eax = task_send_signal((u32)r->ebx, (int)r->ecx);
+        break;
+    case SYS_SIGACTION: {
+        /* ebx=signum, ecx=handler (0=SIG_DFL, 1=SIG_IGN, or user addr) */
+        int sig = (int)r->ebx;
+        u32 handler = r->ecx;
+        if (sig < 1 || sig > 31 || !current_task) { r->eax = (u32)-1; break; }
+        u32 old = current_task->sig_handlers[sig];
+        current_task->sig_handlers[sig] = handler;
+        r->eax = old;
+        break;
+    }
+    case SYS_SIGRETURN:
+        /* Restore user context saved before signal handler was called */
+        if (current_task) {
+            r->eip = current_task->sig_saved_eip;
+            r->_esp = current_task->sig_saved_esp;
+            r->eax = 0;
+        }
+        break;
+    case SYS_STAT:
+        sys_stat(r);
+        break;
+    case SYS_LSEEK:
+        sys_lseek(r);
+        break;
+    case SYS_DUP:
+        sys_dup(r);
+        break;
+    case SYS_DUP2:
+        sys_dup2(r);
+        break;
+    case SYS_PIPE:
+        sys_pipe(r);
+        break;
     default:
         r->eax = (u32)-1;
         break;

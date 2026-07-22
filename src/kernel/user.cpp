@@ -2,6 +2,7 @@
 #include "kernel/paging.h"
 #include "kernel/mm.h"
 #include "lib/ports.h"
+#include "drivers/serial.h"
 
 static u32 tss_page;
 PagingManager *g_user_pd = nullptr;
@@ -29,8 +30,6 @@ void user_init(void) {
 
 void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd,
                      int argc, const char *args) {
-    (void)stack_top;
-
     __asm__ volatile("mov %%ebp, %0" : "=m"(g_entry_esp));
 
     if (args && args[0]) {
@@ -45,14 +44,14 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd,
     if (pd) {
         g_user_pd = pd;
         pd->load();
+        __asm__ volatile("wbinvd");
     }
 
     if (argc > 0 && g_user_args[0]) {
-        /* Push argv pointers + argc onto user stack (at 0x9E000).
-           The iret sets ESP=0x9E000, so args sit just below it.
+        /* Push argv pointers + argc onto user stack.
            Layout: [ESP] = argc, [ESP+4] = argv[0], ... [ESP+4*argc] = 0 */
         char *argp = g_user_args;
-        u32 *stk = (u32 *)0x9E000;
+        u32 *stk = (u32 *)stack_top;
 
         /* Push null sentinel + argv pointers */
         *(--stk) = 0;  /* null terminator */
@@ -80,14 +79,14 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd,
     } else {
         __asm__ volatile(
             "pushl $0x23\n"
-            "pushl $0x9E000\n"
+            "pushl %1\n"        /* user stack from stack_top param */
             "pushf\n"
             "orl $0x200, (%%esp)\n"
             "pushl $0x2B\n"
             "pushl %0\n"
             "iret\n"
             :
-            : "r"(entry)
+            : "r"(entry), "r"(stack_top)
         );
     }
     __builtin_unreachable();

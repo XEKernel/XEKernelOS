@@ -27,6 +27,15 @@
 #define SYS_FORK       24
 #define SYS_EXEC       25
 #define SYS_WAITPID    26
+#define SYS_GETPID     27
+#define SYS_KILL       28
+#define SYS_SIGACTION  29
+#define SYS_SIGRETURN  30
+#define SYS_STAT       31
+#define SYS_LSEEK      32
+#define SYS_DUP        33
+#define SYS_DUP2       34
+#define SYS_PIPE       35
 
 #ifdef __cplusplus
 extern "C" {

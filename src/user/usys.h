@@ -30,10 +30,19 @@ extern "C" {
 #define SYS_FORK       24
 #define SYS_EXEC       25
 #define SYS_WAITPID    26
+#define SYS_GETPID     27
+#define SYS_KILL       28
+#define SYS_SIGACTION  29
+#define SYS_SIGRETURN  30
+#define SYS_STAT       31
+#define SYS_LSEEK      32
+#define SYS_DUP        33
+#define SYS_DUP2       34
+#define SYS_PIPE       35
 
 static inline int syscall4(int num, int a1, int a2, int a3) {
     int ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(a1), "c"(a2), "d"(a3));
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(num), "b"(a1), "c"(a2), "d"(a3) : "memory");
     return ret;
 }
 
@@ -73,6 +82,15 @@ static inline void proc_exit(void)              { syscall0(SYS_EXIT); }
 static inline int  sys_fork(void)               { return syscall0(SYS_FORK); }
 static inline int  sys_exec(const char *path)    { return syscall1(SYS_EXEC, (int)path); }
 static inline int  sys_waitpid(void)             { return syscall0(SYS_WAITPID); }
+static inline int  sys_getpid(void)              { return syscall0(SYS_GETPID); }
+static inline int  sys_kill(int pid, int sig)    { return syscall4(SYS_KILL, pid, sig, 0); }
+static inline int  sys_sigaction(int sig, int handler) { return syscall4(SYS_SIGACTION, sig, handler, 0); }
+static inline void sys_sigreturn(void)           { syscall0(SYS_SIGRETURN); }
+static inline int  sys_stat(const char *path, int *buf) { return syscall4(SYS_STAT, (int)path, (int)buf, 0); }
+static inline int  sys_lseek(int fd, int off, int whence) { return syscall4(SYS_LSEEK, fd, off, whence); }
+static inline int  sys_dup(int fd)               { return syscall1(SYS_DUP, fd); }
+static inline int  sys_dup2(int old, int nw)     { return syscall4(SYS_DUP2, old, nw, 0); }
+static inline int  sys_pipe(int fds[2])           { return syscall1(SYS_PIPE, (int)fds); }
 static inline void sys_time(char *buf)          { syscall1(SYS_TIME, (int)buf); }
 
 #ifdef __cplusplus

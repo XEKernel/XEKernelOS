@@ -71,6 +71,11 @@ int task_create(void (*entry)(void *), void *arg) {
     t->user_stack = 0;
     t->parent = nullptr;
     t->exit_code = 0;
+    t->pending_signals = 0;
+    t->blocked_signals = 0;
+    for (int i = 0; i < 32; i++) t->sig_handlers[i] = 0;
+    t->sig_saved_eip = 0;
+    t->sig_saved_esp = 0;
     list_init(&t->children);
     list_add_tail(&t->list, &ready_queue);
 
@@ -78,14 +83,11 @@ int task_create(void (*entry)(void *), void *arg) {
 }
 
 int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
-    __asm__ volatile("movb $'T', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     struct task_struct *t = (task_struct *)kmalloc(sizeof(struct task_struct));
-    if (!t) { __asm__ volatile("movb $'1', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al"); return -1; }
+    if (!t) return -1;
 
-    __asm__ volatile("movb $'K', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     u32 *kstack = (u32 *)kmalloc(4096);
-    if (!kstack) { __asm__ volatile("movb $'2', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al"); kfree(t); return -1; }
-    __asm__ volatile("movb $'S', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
+    if (!kstack) { kfree(t); return -1; }
     for (int i = 0; i < 1024; i++) kstack[i] = 0xCCCCCCCC;
 
     /* The kernel stack top: when entering from ring3 via interrupt,
@@ -127,14 +129,18 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->arg = nullptr;
     t->paging = user_pd;
     t->user_stack = user_stack_top;
-    t->parent = current_task;    /* parent is whoever created us */
+    t->parent = current_task;
     t->exit_code = 0;
+    t->pending_signals = 0;
+    t->blocked_signals = 0;
+    for (int i = 0; i < 32; i++) t->sig_handlers[i] = 0;
+    t->sig_saved_eip = 0;
+    t->sig_saved_esp = 0;
     list_init(&t->children);
     list_add_tail(&t->sibling, &current_task->children);
     list_add_tail(&t->list, &ready_queue);
 
     current_task = t;
-    __asm__ volatile("movb $'U', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
     return t->pid;
 }
 
@@ -255,4 +261,94 @@ void schedule(registers_t *r) {
     }
 
     current_task = nt;
+}
+
+/* ---- Signal support ---- */
+
+int task_send_signal(u32 pid, int sig) {
+    if (sig < 1 || sig > 31) return -1;
+
+    /* Check all tasks in ready queue + current */
+    struct list_head *pos;
+    list_for_each(pos, &ready_queue) {
+        struct task_struct *t = container_of(pos, struct task_struct, list);
+        if (t->pid == pid) {
+            t->pending_signals |= (1u << sig);
+            return 0;
+        }
+    }
+    if (current_task && current_task->pid == pid) {
+        current_task->pending_signals |= (1u << sig);
+        return 0;
+    }
+    return -1;  /* task not found */
+}
+
+/* Deliver pending signal to current task.
+   Called from isr.cpp before returning to user mode.
+   Modifies r to redirect execution to signal handler. */
+void task_check_signals(registers_t *r) {
+    if (!current_task || current_task->pid == 0) return;
+    if (current_task->pending_signals == 0) return;
+
+    /* Find first pending signal not blocked */
+    for (int sig = 1; sig <= 31; sig++) {
+        if (!(current_task->pending_signals & (1u << sig))) continue;
+        if (current_task->blocked_signals & (1u << sig)) continue;
+
+        /* Clear the pending bit */
+        current_task->pending_signals &= ~(1u << sig);
+
+        u32 handler = current_task->sig_handlers[sig];
+
+        /* SIGKILL and SIGSEGV with default handler → kill process */
+        if (handler == SIG_DFL && (sig == SIGKILL || sig == SIGSEGV)) {
+            serial_write_str("signal: killing pid ");
+            serial_write_char('0' + (current_task->pid / 10) % 10);
+            serial_write_char('0' + current_task->pid % 10);
+            serial_write_str(" with signal ");
+            serial_write_char('0' + (sig / 10) % 10);
+            serial_write_char('0' + sig % 10);
+            serial_write_char('\n');
+
+            current_task->state = TASK_DEAD;
+            current_task->exit_code = sig;
+            list_del(&current_task->list);
+            if (current_task->parent && current_task->parent->state == TASK_BLOCKED) {
+                current_task->parent->state = TASK_READY;
+                list_add_tail(&current_task->parent->list, &ready_queue);
+            }
+            PagingManager::get_kernel_paging()->load();
+            shell_recover(r);
+            return;
+        }
+
+        /* SIG_IGN or default (non-fatal) → ignore */
+        if (handler == SIG_IGN || handler == SIG_DFL) continue;
+
+        /* Custom handler: save context and redirect execution */
+        serial_write_str("signal: delivering sig ");
+        serial_write_char('0' + (sig / 10) % 10);
+        serial_write_char('0' + sig % 10);
+        serial_write_str(" to pid ");
+        serial_write_char('0' + (current_task->pid / 10) % 10);
+        serial_write_char('0' + current_task->pid % 10);
+        serial_write_char('\n');
+
+        /* Save current user context */
+        current_task->sig_saved_eip = r->eip;
+        current_task->sig_saved_esp = r->_esp;
+
+        /* Build signal frame on user stack:
+           [return_addr] [signum]  — pushed before handler runs */
+        u32 *ustack = (u32 *)(r->_esp - 8);
+        ustack[0] = 0;              /* return address placeholder (sigreturn) */
+        ustack[1] = (u32)sig;       /* signal number argument */
+
+        /* Redirect to handler */
+        r->eip = handler;
+        r->_esp = (u32)ustack;
+
+        break;  /* deliver one signal per interrupt return */
+    }
 }

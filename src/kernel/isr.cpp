@@ -35,11 +35,15 @@ extern "C" void c_isr_handler(registers_t *r) {
     }
 
     if (vec == 0x20) {
-        outb(0x20, 0x20);  /* EOI before scheduling — unblocks slave PIC (mouse IRQ12) */
+        outb(0x20, 0x20);
+#if 1  /* Ctrl+C → SIGINT */
         if (kb_ctrl_c()) {
-            shell_recover(r);
-            return;
+            /* Send SIGINT to current foreground task (if user-mode) */
+            if (current_task && (r->cs & 3) == 3) {
+                task_send_signal(current_task->pid, SIGINT);
+            }
         }
+#endif
         schedule(r);
         /* If returning to user mode, ensure user CR3 is loaded.
            c_isr_handler loaded kernel CR3 on entry; schedule may not
@@ -53,7 +57,7 @@ extern "C" void c_isr_handler(registers_t *r) {
         u32 cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
 
-        /* User-mode page fault: kill the process, don't panic */
+        /* User-mode page fault: send SIGSEGV, then let signal handler deal */
         if (r->err_code & 4) {
             serial_write_str("user #PF at EIP=0x");
             for (int i = 28; i >= 0; i -= 4)
@@ -61,39 +65,29 @@ extern "C" void c_isr_handler(registers_t *r) {
             serial_write_str(" CR2=0x");
             for (int i = 28; i >= 0; i -= 4)
                 serial_write_char("0123456789ABCDEF"[(cr2 >> i) & 15]);
-            serial_write_str(" killing task\n");
+            serial_write_str(" SIGSEGV\n");
 
             if (current_task && current_task->pid != 0) {
-                current_task->state = TASK_DEAD;
-                list_del(&current_task->list);
-                if (current_task->paging && current_task->paging != PagingManager::get_kernel_paging())
-                    delete current_task->paging;
-                kfree((void *)current_task->kernel_stack);
-                kfree(current_task);
-                current_task = nullptr;  /* prevent use-after-free below */
+                task_send_signal(current_task->pid, SIGSEGV);
             }
-
-            PagingManager::get_kernel_paging()->load();
-            shell_recover(r);
-            return;
+        } else {
+            /* Kernel-mode page fault: fatal */
+            gfx_puts("\n#PF at EIP=0x");
+            gfx_put_hex_u32(r->eip);
+            gfx_puts(" fault_addr=0x");
+            gfx_put_hex_u32(cr2);
+            gfx_puts(" err=");
+            gfx_put_hex_u32(r->err_code);
+            if (r->err_code & 1) gfx_puts(" present");
+            else gfx_puts(" not-present");
+            if (r->err_code & 2) gfx_puts(" write");
+            else gfx_puts(" read");
+            if (r->err_code & 4) gfx_puts(" user");
+            else gfx_puts(" supervisor");
+            if (r->err_code & 8) gfx_puts(" reserved");
+            gfx_putc('\n');
+            kernel_panic(r, "Page Fault");
         }
-
-        /* Kernel-mode page fault: fatal */
-        gfx_puts("\n#PF at EIP=0x");
-        gfx_put_hex_u32(r->eip);
-        gfx_puts(" fault_addr=0x");
-        gfx_put_hex_u32(cr2);
-        gfx_puts(" err=");
-        gfx_put_hex_u32(r->err_code);
-        if (r->err_code & 1) gfx_puts(" present");
-        else gfx_puts(" not-present");
-        if (r->err_code & 2) gfx_puts(" write");
-        else gfx_puts(" read");
-        if (r->err_code & 4) gfx_puts(" user");
-        else gfx_puts(" supervisor");
-        if (r->err_code & 8) gfx_puts(" reserved");
-        gfx_putc('\n');
-        kernel_panic(r, "Page Fault");
     }
 
     if (vec >= 0x20 && vec <= 0x2F) {
@@ -112,9 +106,16 @@ extern "C" void c_isr_handler(registers_t *r) {
     }
 
     if (from_user) {
-        /* On return to user mode, ensure the task's own page directory
-           is loaded. The entry path switched to kernel CR3 for safety. */
+        /* Check and deliver pending signals before returning to user */
+        task_check_signals(r);
+
+        serial_write_char('e');
+        serial_write_char('0'+r->eax);
+        serial_write_char(' ');
         if (current_task && current_task->paging)
             current_task->paging->load();
+        serial_write_char('f');
+        serial_write_char('0'+r->eax);
+        serial_write_char(' ');
     }
 }

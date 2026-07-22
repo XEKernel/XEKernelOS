@@ -537,3 +537,28 @@ int FatFilesystem::rename(const char *old_name, const char *new_name) {
     }
     return -1;
 }
+
+int FatFilesystem::stat(const char *name, int *is_dir) {
+    u8 fname[11];
+    str_to_name83(name, fname);
+    *is_dir = 0;
+
+    int maxs = curdir_secs();
+    for (int s = 0; s < maxs; s++) {
+        if (read_curdir(s)) return -1;
+        for (int j = 0; j < 512; j += 32) {
+            u8 *e = buf_ + j;
+            if (e[0] == 0) return -1;
+            if (e[0] == 0xE5) continue;
+            if (e[11] & 0x08) continue;
+            int match = 1;
+            for (int k = 0; k < 11; k++) {
+                if (e[k] != fname[k]) { match = 0; break; }
+            }
+            if (!match) continue;
+            *is_dir = (e[11] & 0x10) ? 1 : 0;
+            return *(u32 *)(e + 28);
+        }
+    }
+    return -1;
+}

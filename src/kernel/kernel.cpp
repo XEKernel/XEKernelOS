@@ -21,6 +21,7 @@
 
 extern u32 _bss_start[], _bss_end[];
 
+__attribute__((unused))
 static void idle_task(void *arg) {
     (void)arg;
     for (;;) __asm__ volatile("hlt");
@@ -56,8 +57,14 @@ extern "C" void kernel_main(void) {
     }
     serial_write_str(" w="); serial_write_char('0' + w / 1000 % 10); serial_write_char('0' + w / 100 % 10); serial_write_char('0' + w / 10 % 10); serial_write_char('0' + w % 10);
     serial_write_str(" h="); serial_write_char('0' + h / 1000 % 10); serial_write_char('0' + h / 100 % 10); serial_write_char('0' + h / 10 % 10); serial_write_char('0' + h % 10);
-    serial_write_str(" bpp="); serial_write_char('0' + b % 10);
-    serial_write_str(" pitch="); serial_write_char('0' + pt / 1000 % 10); serial_write_char('0' + pt / 100 % 10);
+    serial_write_str(" bpp=");
+    serial_write_char('0' + b / 10 % 10);
+    serial_write_char('0' + b % 10);
+    serial_write_str(" pitch=");
+    serial_write_char('0' + pt / 1000 % 10);
+    serial_write_char('0' + pt / 100 % 10);
+    serial_write_char('0' + pt / 10 % 10);
+    serial_write_char('0' + pt % 10);
     serial_write_char('\n');
 
     {

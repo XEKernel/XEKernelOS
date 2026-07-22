@@ -44,7 +44,7 @@ test_elf = os.path.join(os.path.dirname(__file__), '..', 'build', 'test_elf.elf'
 if os.path.exists(test_elf):
     add_binary("TEST_ELFELF", test_elf)
 else:
-    print(f"Warning: {hello_bin} not found, skipping")
+    print(f"Warning: {test_elf} not found, skipping")
 
 
 def name_to_83(name_str):
@@ -90,6 +90,7 @@ def build_disk(output_path):
     # ---- Write files ----
     current_cluster = 2  # first data cluster
     root_dir = bytearray(ROOT_SECTORS * BPS)
+    dir_entry_idx = 0  # separate counter for root directory entries
 
     def set_fat_entry(cl, value):
         """Write a 12-bit FAT entry for cluster cl."""
@@ -132,8 +133,8 @@ def build_disk(output_path):
             img[data_base + cl_off: data_base + cl_off + len(chunk)] = chunk
 
         # Create root directory entry
-        entry_idx = start_cluster - 2  # simple mapping
-        entry_offset = entry_idx * 32
+        entry_offset = dir_entry_idx * 32
+        dir_entry_idx += 1
         entry = bytearray(32)
         entry[0:11] = name_bytes
         entry[11] = 0x20  # archive attribute

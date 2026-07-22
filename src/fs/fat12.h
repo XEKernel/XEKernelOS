@@ -17,6 +17,7 @@ public:
     int  delete_file(const char *name);
     int  rmdir(const char *name);
     int  rename(const char *old_name, const char *new_name);
+    int  stat(const char *name, int *is_dir);  /* returns size, sets is_dir */
     u16  find_free_cluster();
     u16  alloc_cluster();
     void set_cluster(u16 cluster, u16 value);
@@ -56,6 +57,7 @@ inline int  fat_write_file(const char *n, const u8 *d, u32 s) { return fat.write
 inline int  fat_delete_file(const char *n) { return fat.delete_file(n); }
 inline int  fat_rmdir(const char *n)  { return fat.rmdir(n); }
 inline int  fat_rename(const char *o, const char *n) { return fat.rename(o, n); }
+inline int  fat_stat(const char *n, int *is_dir)  { return fat.stat(n, is_dir); }
 inline u16  fat_find_free_cluster()   { return fat.find_free_cluster(); }
 inline u16  fat_alloc_cluster()       { return fat.alloc_cluster(); }
 inline void fat_set_cluster(u16 c, u16 v) { fat.set_cluster(c, v); }

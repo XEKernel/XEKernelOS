@@ -39,6 +39,10 @@
 #define SYS_FWRITE     36
 #define SYS_SET_OUTFD  37
 #define SYS_FSYNC      38
+#define SYS_RD_CREATE  39
+#define SYS_RD_READ    40
+#define SYS_RD_LIST    41
+#define SYS_RD_REMOVE  42
 
 #ifdef __cplusplus
 extern "C" {

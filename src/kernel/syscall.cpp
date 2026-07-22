@@ -9,6 +9,7 @@
 #include "drivers/mouse.h"
 #include "drivers/pit.h"
 #include "fs/fat12.h"
+#include "fs/ramdisk.h"
 #include "lib/heap.h"
 #include "lib/ports.h"
 
@@ -646,6 +647,33 @@ static void sys_fsync(registers_t *r) {
     r->eax = (u32)result;
 }
 
+/* ---- ramdisk syscalls ---- */
+
+static void sys_rd_create(registers_t *r) {
+    const char *name = (const char *)r->ebx;
+    const u8 *data = (const u8 *)r->ecx;
+    u32 size = r->edx;
+    r->eax = (u32)rd_create(name, data, size);
+}
+
+static void sys_rd_read(registers_t *r) {
+    const char *name = (const char *)r->ebx;
+    u8 *out = (u8 *)r->ecx;
+    u32 max = r->edx;
+    r->eax = (u32)rd_read(name, out, max);
+}
+
+static void sys_rd_list(registers_t *r) {
+    char *out = (char *)r->ebx;
+    u32 max = r->ecx;
+    r->eax = (u32)rd_list(out, max);
+}
+
+static void sys_rd_remove(registers_t *r) {
+    const char *name = (const char *)r->ebx;
+    r->eax = (u32)rd_remove(name);
+}
+
 extern "C" void syscall_handler(registers_t *r) {
 
     switch (r->eax) {
@@ -739,6 +767,18 @@ extern "C" void syscall_handler(registers_t *r) {
         break;
     case SYS_FSYNC:
         sys_fsync(r);
+        break;
+    case SYS_RD_CREATE:
+        sys_rd_create(r);
+        break;
+    case SYS_RD_READ:
+        sys_rd_read(r);
+        break;
+    case SYS_RD_LIST:
+        sys_rd_list(r);
+        break;
+    case SYS_RD_REMOVE:
+        sys_rd_remove(r);
         break;
     default:
         r->eax = (u32)-1;

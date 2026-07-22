@@ -92,6 +92,10 @@ static void cmd_help(void) {
     gfx_puts("  CP <a> <b> 复制文件\n");
     gfx_puts("  CREATE <n> <c> 创建文件\n");
     gfx_puts("  RUN  <file>运行批处理\n");
+    gfx_puts("  TMP  L     列出/tmp\n");
+    gfx_puts("  TMP  W <n> <c> 写入/tmp\n");
+    gfx_puts("  TMP  R <n> 读取/tmp\n");
+    gfx_puts("  TMP  D <n> 删除/tmp\n");
     gfx_puts("  TIME       显示时间\n");
     gfx_puts("  >   file   输出重定向\n");
     gfx_puts("  EXIT       退出\n");
@@ -181,6 +185,59 @@ static void cmd_time(void) {
     gfx_puts(tbuf);
     gfx_putc('\n');
     gfx_set_fg(COLOR_LGRAY);
+}
+
+static void cmd_tmp(const char *args) {
+    while (*args == ' ') args++;
+    if (!*args) { err_msg(" 用法: TMP L|W <n> <c>|R <n>|D <n>\n"); return; }
+
+    char op[4];
+    const char *rest = next_token(args, op);
+
+    if (!strcmp_ci(op, "L")) {
+        static char lbuf[512] __attribute__((section(".data"))) = {0};
+        int n = rd_list(lbuf, 511);
+        if (n <= 0) {
+            gfx_puts("  /tmp 为空\n");
+            return;
+        }
+        lbuf[n] = 0;
+        gfx_set_fg(COLOR_LCYAN);
+        gfx_puts("  /tmp:\n");
+        gfx_set_fg(COLOR_LGRAY);
+        gfx_puts(lbuf);
+
+    } else if (!strcmp_ci(op, "W")) {
+        while (*rest == ' ') rest++;
+        if (!*rest) { err_msg(" 用法: TMP W <文件名> <内容>\n"); return; }
+        char name[32]; int i = 0;
+        while (*rest && *rest != ' ' && i < 31) name[i++] = *rest++;
+        name[i] = 0;
+        while (*rest == ' ') rest++;
+        if (!*rest) { err_msg(" 用法: TMP W <文件名> <内容>\n"); return; }
+        int len = 0; while (rest[len]) len++;
+        if (rd_create(name, rest, len) == 0) ok_msg();
+        else err_msg(" ramdisk 已满\n");
+
+    } else if (!strcmp_ci(op, "R")) {
+        while (*rest == ' ') rest++;
+        if (!*rest) { err_msg(" 用法: TMP R <文件名>\n"); return; }
+        static char rbuf[4096] __attribute__((section(".data"))) = {0};
+        int n = rd_read(rest, rbuf, 4095);
+        if (n < 0) { err_msg(" 文件不存在\n"); return; }
+        rbuf[n] = 0;
+        gfx_puts(rbuf);
+        gfx_putc('\n');
+
+    } else if (!strcmp_ci(op, "D")) {
+        while (*rest == ' ') rest++;
+        if (!*rest) { err_msg(" 用法: TMP D <文件名>\n"); return; }
+        if (rd_remove(rest) == 0) ok_msg();
+        else err_msg(" 文件不存在\n");
+
+    } else {
+        err_msg(" 未知操作\n");
+    }
 }
 
 static void cmd_cd(const char *args) {
@@ -319,6 +376,8 @@ static void cmd_run(const char *args) {
             cmd_create(rargs);
         } else if (!strcmp_ci(lcmd, "TIME")) {
             cmd_time();
+        } else if (!strcmp_ci(lcmd, "TMP")) {
+            cmd_tmp(rargs);
         } else if (!strcmp_ci(lcmd, "ECHO") || !strcmp_ci(lcmd, "REM") || lcmd[0] == '#') {
             /* comment or handled above */
         } else if (!strcmp_ci(lcmd, "EXIT")) {
@@ -389,6 +448,8 @@ extern "C" void _start(void) {
             cmd_create(real_args);
         } else if (!strcmp_ci(cmd, "RUN")) {
             cmd_run(real_args);
+        } else if (!strcmp_ci(cmd, "TMP")) {
+            cmd_tmp(real_args);
         } else if (!strcmp_ci(cmd, "TIME")) {
             if (has_redir) redirect_to(redir_file, (void(*)(const char*))cmd_time, "");
             else cmd_time();

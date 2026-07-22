@@ -34,10 +34,12 @@ CXX_SRCS := $(SRCDIR)/kernel/kernel.cpp \
             $(SRCDIR)/drivers/pit.cpp \
             $(SRCDIR)/drivers/mouse.cpp \
             $(SRCDIR)/drivers/ata.cpp \
+            $(SRCDIR)/drivers/bcache.cpp \
             $(SRCDIR)/drivers/gfx.cpp \
             $(SRCDIR)/drivers/serial.cpp \
             $(SRCDIR)/drivers/font_cn_load.cpp \
             $(SRCDIR)/fs/fat12.cpp \
+            $(SRCDIR)/fs/ramdisk.cpp \
             $(SRCDIR)/shell/shell.cpp \
             $(SRCDIR)/lib/heap.cpp \
             $(SRCDIR)/lib/strutil.cpp \

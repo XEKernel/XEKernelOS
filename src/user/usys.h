@@ -42,6 +42,10 @@ extern "C" {
 #define SYS_FWRITE     36
 #define SYS_SET_OUTFD  37
 #define SYS_FSYNC      38
+#define SYS_RD_CREATE  39
+#define SYS_RD_READ    40
+#define SYS_RD_LIST    41
+#define SYS_RD_REMOVE  42
 
 static inline int syscall4(int num, int a1, int a2, int a3) {
     int ret;
@@ -100,6 +104,12 @@ static inline int  sys_fsync(int fd, const char *name) { return syscall4(SYS_FSY
 static inline int  sys_open(const char *name)     { return syscall1(SYS_OPEN, (int)name); }
 static inline void sys_close(int fd)              { syscall1(SYS_CLOSE, fd); }
 static inline void sys_time(char *buf)          { syscall1(SYS_TIME, (int)buf); }
+
+/* Ramdisk */
+static inline int  rd_create(const char *n, const char *d, int s) { return syscall4(SYS_RD_CREATE, (int)n, (int)d, s); }
+static inline int  rd_read(const char *n, char *o, int m) { return syscall4(SYS_RD_READ, (int)n, (int)o, m); }
+static inline int  rd_list(char *o, int m)       { return syscall4(SYS_RD_LIST, (int)o, m, 0); }
+static inline int  rd_remove(const char *n)       { return syscall1(SYS_RD_REMOVE, (int)n); }
 
 #ifdef __cplusplus
 }

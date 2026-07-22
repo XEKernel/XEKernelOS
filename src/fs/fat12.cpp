@@ -1,5 +1,6 @@
 #include "fs/fat12.h"
 #include "drivers/ata.h"
+#include "drivers/bcache.h"
 #include "drivers/gfx.h"
 #include "lib/types.h"
 
@@ -8,11 +9,11 @@ FatFilesystem fat;
 /* ---- internal helpers ---- */
 
 int FatFilesystem::read_root_sec(int sector, u8 *dst) {
-    return ata_read(root_secs_ + sector, 1, (u16 *)dst);
+    return bc_read(root_secs_ + sector, 1, (u16 *)dst);
 }
 
 int FatFilesystem::write_root_sec(int sector, u8 *src) {
-    return ata_write(root_secs_ + sector, 1, (u16 *)src);
+    return bc_write(root_secs_ + sector, 1, (u16 *)src);
 }
 
 u16 FatFilesystem::next_cluster(u16 cl) {
@@ -20,7 +21,7 @@ u16 FatFilesystem::next_cluster(u16 cl) {
     u32 fat_sec = off / 512;
     u32 fat_pos = off % 512;
     u8 fbuf[512];
-    ata_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    bc_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
     u16 val = *(u16 *)(fbuf + fat_pos);
     if (cl & 1) return val >> 4;
     return val & 0xFFF;
@@ -31,7 +32,7 @@ u16 FatFilesystem::read_fat_entry(u16 cl) {
     u32 fat_sec = off / 512;
     u32 fat_pos = off % 512;
     u8 fbuf[512];
-    ata_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    bc_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
     u16 val = *(u16 *)(fbuf + fat_pos);
     if (cl & 1) return val >> 4;
     return val & 0xFFF;
@@ -42,16 +43,16 @@ void FatFilesystem::write_fat_entry(u16 cl, u16 value) {
     u32 fat_sec = off / 512;
     u32 fat_pos = off % 512;
     u8 fbuf[512];
-    ata_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    bc_read(start_sec_ + fat_sec, 1, (u16 *)fbuf);
     u16 val = *(u16 *)(fbuf + fat_pos);
     if (cl & 1)
         val = (val & 0x000F) | ((value & 0xFFF) << 4);
     else
         val = (val & 0xF000) | (value & 0xFFF);
     *(u16 *)(fbuf + fat_pos) = val;
-    ata_write(start_sec_ + fat_sec, 1, (u16 *)fbuf);
+    bc_write(start_sec_ + fat_sec, 1, (u16 *)fbuf);
     for (int i = 1; i < num_fat_; i++)
-        ata_write(start_sec_ + i * fat_secs_ + fat_sec, 1, (u16 *)fbuf);
+        bc_write(start_sec_ + i * fat_secs_ + fat_sec, 1, (u16 *)fbuf);
 }
 
 void FatFilesystem::name83_to_str(u8 *e, char *name) {
@@ -100,7 +101,7 @@ int FatFilesystem::read_curdir(int sec_idx) {
         if (nx < 2 || nx >= 0xFF0) return -1;
         cl = nx; sec_idx -= per;
     }
-    return ata_read(data_sec_ + (cl - 2) * spc_ + sec_idx, 1, (u16 *)buf_);
+    return bc_read(data_sec_ + (cl - 2) * spc_ + sec_idx, 1, (u16 *)buf_);
 }
 
 int FatFilesystem::write_curdir(int sec_idx) {
@@ -113,13 +114,13 @@ int FatFilesystem::write_curdir(int sec_idx) {
         if (nx < 2 || nx >= 0xFF0) return -1;
         cl = nx; sec_idx -= per;
     }
-    return ata_write(data_sec_ + (cl - 2) * spc_ + sec_idx, 1, (u16 *)buf_);
+    return bc_write(data_sec_ + (cl - 2) * spc_ + sec_idx, 1, (u16 *)buf_);
 }
 
 /* ---- public API ---- */
 
 int FatFilesystem::init() {
-    int r = ata_read(0, 1, (u16 *)buf_);
+    int r = bc_read(0, 1, (u16 *)buf_);
     if (r) return -1;
     bps_ = *(u16 *)(buf_ + 11);
     spc_ = buf_[13];
@@ -176,7 +177,7 @@ int FatFilesystem::read_file(const char *name, u8 *out, u32 max_len) {
             while (cl >= 2 && cl < 0xFF0 && remain) {
                 u32 chunk = spc_ * bps_;
                 if (chunk > remain) chunk = remain;
-                ata_read(data_sec_ + (cl - 2) * spc_, (chunk + bps_ - 1) / bps_, (u16 *)(out + offset));
+                bc_read(data_sec_ + (cl - 2) * spc_, (chunk + bps_ - 1) / bps_, (u16 *)(out + offset));
                 offset += chunk;
                 remain -= chunk;
                 cl = next_cluster(cl);
@@ -237,7 +238,7 @@ int FatFilesystem::write_file(const char *name, const u8 *data, u32 size) {
         if (chunk > size - written) chunk = size - written;
         u32 sec_count = (chunk + bps_ - 1) / bps_;
         if (sec_count > 0)
-            ata_write(data_sec_ + (cl - 2) * spc_, sec_count, (u16 *)(data + written));
+            bc_write(data_sec_ + (cl - 2) * spc_, sec_count, (u16 *)(data + written));
         written += chunk;
         cl = next_cluster(cl);
     }
@@ -399,7 +400,7 @@ int FatFilesystem::mkdir(const char *name) {
     dd[11] = 0x10;
     *(u16 *)(dd + 26) = cur_dir_cluster_;
 
-    ata_write(data_sec_ + (cl - 2) * spc_, 1, (u16 *)db);
+    bc_write(data_sec_ + (cl - 2) * spc_, 1, (u16 *)db);
 
     u8 fname[11];
     str_to_name83(name, fname);
@@ -443,7 +444,7 @@ int FatFilesystem::cat(const char *name) {
             u8 dbuf[513];  // +1 for null terminator
             u32 remain = size;
             while (cl >= 2 && cl < 0xFF0 && remain) {
-                ata_read(data_sec_ + (cl - 2) * spc_, 1, (u16 *)dbuf);
+                bc_read(data_sec_ + (cl - 2) * spc_, 1, (u16 *)dbuf);
                 u32 chunk = spc_ * bps_;
                 if (chunk > remain) chunk = remain;
                 dbuf[chunk] = 0;
@@ -491,7 +492,7 @@ int FatFilesystem::rmdir(const char *name) {
 
             u16 dir_cl = *(u16 *)(e + 26);
             u8 check[512];
-            ata_read(data_sec_ + (dir_cl - 2) * spc_, 1, (u16 *)check);
+            bc_read(data_sec_ + (dir_cl - 2) * spc_, 1, (u16 *)check);
             for (int k = 64; k < 512; k += 32) {
                 if (check[k] != 0 && check[k] != 0xE5) return -2;
                 if (check[k] == 0) break;

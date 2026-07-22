@@ -16,7 +16,9 @@
 #include "kernel/user.h"
 #include "kernel/task.h"
 #include "fs/fat12.h"
+#include "fs/ramdisk.h"
 #include "drivers/font_cn.h"
+#include "drivers/bcache.h"
 #include "shell/shell.h"
 
 extern u32 _bss_start[], _bss_end[];
@@ -104,6 +106,8 @@ extern "C" void kernel_main(void) {
     serial_write_str("fat_init calling...\n");
     int f = fat_init();
     serial_write_str("fat_init done\n");
+    bc_init();                 /* init block cache after FS is ready */
+    rd_init();                 /* init ramdisk */
     font_cn_load();
     serial_write_str(font_cn_loaded ? "font_cn loaded\n" : "font_cn NOT loaded\n");
 

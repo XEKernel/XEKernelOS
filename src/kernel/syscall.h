@@ -43,6 +43,7 @@
 #define SYS_RD_READ    40
 #define SYS_RD_LIST    41
 #define SYS_RD_REMOVE  42
+#define SYS_DROP_CAP   43
 
 #ifdef __cplusplus
 extern "C" {

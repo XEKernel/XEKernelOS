@@ -23,6 +23,7 @@ struct pipe_t {
     u32  wpos;    /* write position */
     u32  count;   /* bytes available to read */
     int  refs;    /* reference count (2 when both ends open) */
+    bool broken;  /* one end closed → pipe broken */
 };
 
 /* File descriptor table */
@@ -34,8 +35,7 @@ static u8   fd_type[MAX_FD] = {0};    /* 0=unused, 1=file, 2=pipe-read, 3=pipe-w
 /* Heap break — starts at 0x10000000 (PDE 64, clear of kernel PDEs) */
 static u32 user_break = 0x10000000;
 
-/* Output redirect: when >=0, gfx_puts/putc write to this FD instead of screen */
-static int g_output_fd = -1;
+/* Per-task output redirect via task_struct.output_fd (准则一) */
 
 static void sys_write(registers_t *r) {
     char *str = (char *)r->ebx;
@@ -57,6 +57,7 @@ static void sys_fwrite(registers_t *r) {
     u8 typ = fd_type[fd];
     if (typ == 3) {  /* pipe write-end */
         pipe_t *pipe = (pipe_t *)fd_buf[fd];
+        if (pipe->broken) { r->eax = (u32)-1; return; }  /* 准则二: broken pipe */
         u32 avail = PIPE_BUF_SZ - pipe->count;
         if (len > avail) len = avail;
         if (len == 0) { r->eax = 0; return; }
@@ -96,7 +97,11 @@ static void sys_read(registers_t *r) {
         if (!buf || max <= 0 || max > 4096) { r->eax = 0; return; }
         u32 n = pipe->count;
         if (n > (u32)max) n = (u32)max;
-        if (n == 0) { r->eax = 0; return; }  /* empty pipe */
+        if (n == 0) {
+            /* 准则二: broken pipe → EOF */
+            r->eax = pipe->broken ? (u32)-1 : 0;
+            return;
+        }
         for (u32 i = 0; i < n; i++) {
             buf[i] = pipe->buf[pipe->rpos];
             pipe->rpos = (pipe->rpos + 1) % PIPE_BUF_SZ;
@@ -438,9 +443,10 @@ static void sys_close(registers_t *r) {
     if (fd >= MAX_FD || !fd_buf[fd]) { r->eax = (u32)-1; return; }
 
     if (fd_type[fd] == 2 || fd_type[fd] == 3) {
-        /* Pipe: decrement refcount, only free when both ends closed */
+        /* Pipe: decrement refcount, mark broken so other end knows */
         pipe_t *pipe = (pipe_t *)fd_buf[fd];
         pipe->refs--;
+        pipe->broken = true;  /* one end closed → pipe broken */
         if (pipe->refs <= 0)
             kfree(pipe);
     } else {
@@ -486,16 +492,22 @@ static void sys_stat(registers_t *r) {
 static void sys_dup(registers_t *r) {
     u32 old_fd = r->ebx;
     if (old_fd >= MAX_FD || !fd_buf[old_fd]) { r->eax = (u32)-1; return; }
-    /* Find lowest free fd */
     int new_fd = -1;
     for (int i = 0; i < MAX_FD; i++) {
         if (!fd_buf[i]) { new_fd = i; break; }
     }
     if (new_fd < 0) { r->eax = (u32)-1; return; }
-    fd_buf[new_fd] = fd_buf[old_fd];
+
+    fd_buf[new_fd]  = fd_buf[old_fd];
     fd_size[new_fd] = fd_size[old_fd];
-    fd_pos[new_fd] = fd_pos[old_fd];
+    fd_pos[new_fd]  = fd_pos[old_fd];
     fd_type[new_fd] = fd_type[old_fd];
+
+    /* Increment pipe refcount (准则二: refcounted FDs) */
+    if (fd_type[old_fd] == 2 || fd_type[old_fd] == 3) {
+        pipe_t *pipe = (pipe_t *)fd_buf[old_fd];
+        pipe->refs++;
+    }
     r->eax = new_fd;
 }
 
@@ -506,12 +518,28 @@ static void sys_dup2(registers_t *r) {
         r->eax = (u32)-1; return;
     }
     if (old_fd == new_fd) { r->eax = new_fd; return; }
-    /* Close new_fd if open */
-    if (fd_buf[new_fd]) { kfree(fd_buf[new_fd]); }
-    fd_buf[new_fd] = fd_buf[old_fd];
+
+    /* Close new_fd if open (with proper pipe refcount cleanup) */
+    if (fd_buf[new_fd]) {
+        if (fd_type[new_fd] == 2 || fd_type[new_fd] == 3) {
+            pipe_t *pipe = (pipe_t *)fd_buf[new_fd];
+            pipe->refs--;
+            if (pipe->refs <= 0) kfree(pipe);
+        } else {
+            kfree(fd_buf[new_fd]);
+        }
+    }
+
+    fd_buf[new_fd]  = fd_buf[old_fd];
     fd_size[new_fd] = fd_size[old_fd];
-    fd_pos[new_fd] = fd_pos[old_fd];
+    fd_pos[new_fd]  = fd_pos[old_fd];
     fd_type[new_fd] = fd_type[old_fd];
+
+    /* Increment pipe refcount */
+    if (fd_type[old_fd] == 2 || fd_type[old_fd] == 3) {
+        pipe_t *pipe = (pipe_t *)fd_buf[old_fd];
+        pipe->refs++;
+    }
     r->eax = new_fd;
 }
 
@@ -527,6 +555,7 @@ static void sys_pipe(registers_t *r) {
     pipe->wpos = 0;
     pipe->count = 0;
     pipe->refs = 2;  /* read-end + write-end */
+    pipe->broken = false;
 
     /* Find two free FDs */
     int rfd = -1, wfd = -1;
@@ -595,10 +624,10 @@ static void sys_cls(registers_t *r) {
 }
 
 static void sys_gfx_putc(registers_t *r) {
-    if (g_output_fd >= 0 && g_output_fd < MAX_FD && fd_buf[g_output_fd]) {
-        /* Redirect to file: append one byte */
-        if (fd_pos[g_output_fd] < fd_size[g_output_fd]) {
-            fd_buf[g_output_fd][fd_pos[g_output_fd]++] = (u8)(r->ebx);
+    int ofd = current_task ? current_task->output_fd : -1;
+    if (ofd >= 0 && ofd < MAX_FD && fd_buf[ofd]) {
+        if (fd_pos[ofd] < fd_size[ofd]) {
+            fd_buf[ofd][fd_pos[ofd]++] = (u8)(r->ebx);
         }
     } else {
         gfx.putc((char)r->ebx);
@@ -607,12 +636,12 @@ static void sys_gfx_putc(registers_t *r) {
 }
 
 static void sys_gfx_puts(registers_t *r) {
-    if (g_output_fd >= 0 && g_output_fd < MAX_FD && fd_buf[g_output_fd]) {
-        /* Redirect to file: append string */
+    int ofd = current_task ? current_task->output_fd : -1;
+    if (ofd >= 0 && ofd < MAX_FD && fd_buf[ofd]) {
         const char *s = (const char *)r->ebx;
-        u8 *buf = fd_buf[g_output_fd];
-        u32 size = fd_size[g_output_fd];
-        u32 *pos = &fd_pos[g_output_fd];
+        u8 *buf = fd_buf[ofd];
+        u32 size = fd_size[ofd];
+        u32 *pos = &fd_pos[ofd];
         while (*s && *pos < size)
             buf[(*pos)++] = (u8)(*s++);
     } else {
@@ -628,12 +657,12 @@ static void sys_gfx_set_fg(registers_t *r) {
 
 static void sys_set_outfd(registers_t *r) {
     int fd = (int)r->ebx;
-    /* -1 = restore screen, >=0 = redirect to FD */
+    if (!current_task) { r->eax = (u32)-1; return; }
     if (fd < -1) fd = -1;
     if (fd >= MAX_FD) fd = -1;
     if (fd >= 0 && !fd_buf[fd]) fd = -1;
-    r->eax = g_output_fd;  /* return previous */
-    g_output_fd = fd;
+    r->eax = (u32)current_task->output_fd;  /* return previous */
+    current_task->output_fd = fd;             /* 准则一: per-task */
 }
 
 static void sys_fsync(registers_t *r) {
@@ -723,7 +752,10 @@ extern "C" void syscall_handler(registers_t *r) {
             r->eax = (u32)-1;
         break;
     case SYS_KILL:
-        /* Send signal to target PID. SIGKILL is immediate, others pend. */
+        /* 准则四: caller must have CAP_SIGNAL */
+        if (current_task && !(current_task->caps & CAP_SIGNAL)) {
+            r->eax = (u32)-1; break;
+        }
         r->eax = task_send_signal((u32)r->ebx, (int)r->ecx);
         break;
     case SYS_SIGACTION: {
@@ -779,6 +811,10 @@ extern "C" void syscall_handler(registers_t *r) {
         break;
     case SYS_RD_REMOVE:
         sys_rd_remove(r);
+        break;
+    case SYS_DROP_CAP:
+        /* 准则四: task can only drop its own capabilities */
+        r->eax = (u32)(current_task ? task_drop_cap((u32)r->ebx) : -1);
         break;
     default:
         r->eax = (u32)-1;

@@ -46,6 +46,7 @@ extern "C" {
 #define SYS_RD_READ    40
 #define SYS_RD_LIST    41
 #define SYS_RD_REMOVE  42
+#define SYS_DROP_CAP   43
 
 static inline int syscall4(int num, int a1, int a2, int a3) {
     int ret;
@@ -110,6 +111,7 @@ static inline int  rd_create(const char *n, const char *d, int s) { return sysca
 static inline int  rd_read(const char *n, char *o, int m) { return syscall4(SYS_RD_READ, (int)n, (int)o, m); }
 static inline int  rd_list(char *o, int m)       { return syscall4(SYS_RD_LIST, (int)o, m, 0); }
 static inline int  rd_remove(const char *n)       { return syscall1(SYS_RD_REMOVE, (int)n); }
+static inline int  sys_drop_cap(int cap)          { return syscall1(SYS_DROP_CAP, cap); }
 
 #ifdef __cplusplus
 }

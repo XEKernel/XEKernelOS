@@ -36,13 +36,16 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     if (vec == 0x20) {
         outb(0x20, 0x20);
-#if 1  /* Ctrl+C → SIGINT */
+        /* 准则三: Boost foreground task on keyboard activity */
         if (kb_ctrl_c()) {
             if (current_task && (r->cs & 3) == 3) {
+                task_boost_priority(current_task->pid, 5);
                 task_send_signal(current_task->pid, SIGINT);
             }
         }
-#endif
+        /* Any key activity from keyboard polling boosts the active task */
+        if (current_task && current_task->pid != 0)
+            task_boost_priority(current_task->pid, 1);
         /* Update mouse cursor at 100Hz regardless of current task */
         gfx.mcursor_update();
 

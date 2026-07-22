@@ -78,6 +78,11 @@ int task_create(void (*entry)(void *), void *arg) {
     t->sig_saved_eip = 0;
     t->sig_saved_esp = 0;
     list_init(&t->children);
+    t->priority = 128;
+    t->dynamic_boost = 0;
+    t->boost_expire = 0;
+    t->caps = CAP_ALL;
+    t->output_fd = -1;
     list_add_tail(&t->list, &ready_queue);
 
     return t->pid;
@@ -138,6 +143,11 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->sig_saved_eip = 0;
     t->sig_saved_esp = 0;
     list_init(&t->children);
+    t->priority = 128;
+    t->dynamic_boost = 0;
+    t->boost_expire = 0;
+    t->caps = (current_task ? current_task->caps : CAP_ALL); /* 准则四: inherit */
+    t->output_fd = -1;
     list_add_tail(&t->sibling, &current_task->children);
     list_add_tail(&t->list, &ready_queue);
 
@@ -215,7 +225,7 @@ void task_yield(void) {
 void schedule(registers_t *r) {
     if (!current_task) return;
 
-    /* Save current task context (including pid 0 kernel shell) */
+    /* Save current task context */
     current_task->ecx = r->ecx;
     current_task->edx = r->edx;
     current_task->ebx = r->ebx;
@@ -227,23 +237,53 @@ void schedule(registers_t *r) {
     current_task->esp = r->_esp;
     current_task->eflags = r->eflags;
 
-    /* Re-queue running tasks (skip DEAD tasks being cleaned up) */
+    /* Re-queue running tasks (skip DEAD) */
     if (current_task->state == TASK_RUNNING) {
         current_task->state = TASK_READY;
         list_add_tail(&current_task->list, &ready_queue);
     }
 
     if (list_empty(&ready_queue)) {
-        /* Nothing to run — this shouldn't happen; return to current */
         current_task->state = TASK_RUNNING;
         return;
     }
 
-    struct list_head *next = ready_queue.next;
-    struct task_struct *nt = container_of(next, struct task_struct, list);
-    list_del(next);
+    /* ---- 准则三: O(1) dynamic priority pick ---- */
+    struct list_head *pos;
+    struct task_struct *nt = nullptr;
+    u8 best_prio = 0;
+
+    list_for_each(pos, &ready_queue) {
+        struct task_struct *t = container_of(pos, struct task_struct, list);
+        u8 eff = t->priority + t->dynamic_boost;
+        if (eff > 255) eff = 255;
+        if (eff >= best_prio) {  /* >= gives fairness among equals */
+            best_prio = eff;
+            nt = t;
+        }
+    }
+
+    if (!nt) { nt = container_of(ready_queue.next, struct task_struct, list); }
+
+    list_del(&nt->list);
     nt->state = TASK_RUNNING;
 
+    /* ---- 准则三: decay dynamic boost each tick ---- */
+    static u32 decay_counter = 0;
+    if (++decay_counter >= 10) {  /* ~100ms at 100Hz */
+        decay_counter = 0;
+        list_for_each(pos, &ready_queue) {
+            struct task_struct *t = container_of(pos, struct task_struct, list);
+            if (t->dynamic_boost > 0) t->dynamic_boost--;
+        }
+    }
+
+    /* ---- 修复 V9: CR3 BEFORE EIP ---- */
+    if (nt->paging && nt->paging != current_task->paging) {
+        nt->paging->load();
+    }
+
+    /* Restore context (EIP restored AFTER CR3) */
     r->ecx = nt->ecx;
     r->edx = nt->edx;
     r->ebx = nt->ebx;
@@ -254,12 +294,7 @@ void schedule(registers_t *r) {
     r->cs  = nt->cs;
     r->_esp = nt->esp;
     r->eflags = nt->eflags;
-    r->eax = 0;
-
-    /* CR3 switch: load the new task's page directory */
-    if (nt->paging && nt->paging != current_task->paging) {
-        nt->paging->load();
-    }
+    r->eax = nt->pid == current_task->pid ? nt->pid : 0;  /* 0 = child in fork */
 
     current_task = nt;
 }
@@ -351,5 +386,44 @@ void task_check_signals(registers_t *r) {
         r->_esp = (u32)ustack;
 
         break;  /* deliver one signal per interrupt return */
+    }
+}
+
+/* ---- Capability management (准则四) ---- */
+
+bool task_has_cap(u32 pid, u32 cap) {
+    struct list_head *pos;
+    list_for_each(pos, &ready_queue) {
+        struct task_struct *t = container_of(pos, struct task_struct, list);
+        if (t->pid == pid) return (t->caps & cap) != 0;
+    }
+    if (current_task && current_task->pid == pid)
+        return (current_task->caps & cap) != 0;
+    return false;
+}
+
+int task_drop_cap(u32 cap) {
+    if (!current_task) return -1;
+    current_task->caps &= ~cap;
+    return 0;
+}
+
+/* ---- Dynamic priority boost (准则三) ---- */
+
+void task_boost_priority(u32 pid, u8 amount) {
+    /* Boost the task with given PID (called from IRQ1/IRQ12 handler) */
+    struct list_head *pos;
+    list_for_each(pos, &ready_queue) {
+        struct task_struct *t = container_of(pos, struct task_struct, list);
+        if (t->pid == pid) {
+            t->dynamic_boost += amount;
+            if (t->dynamic_boost > 100) t->dynamic_boost = 100;
+            return;
+        }
+    }
+    /* Also check current_task */
+    if (current_task && current_task->pid == pid) {
+        current_task->dynamic_boost += amount;
+        if (current_task->dynamic_boost > 100) current_task->dynamic_boost = 100;
     }
 }

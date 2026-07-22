@@ -12,6 +12,16 @@ enum task_state {
 
 class PagingManager;  /* forward declaration */
 
+/* ---- 准则四：Capability Tokens ---- */
+#define CAP_DISK_READ    (1 << 0)
+#define CAP_DISK_WRITE   (1 << 1)
+#define CAP_SCREEN       (1 << 2)   /* write to framebuffer / gfx */
+#define CAP_SHUTDOWN     (1 << 3)
+#define CAP_SIGNAL       (1 << 4)   /* send signals to other tasks */
+#define CAP_SYSCALL      (1 << 5)   /* call any syscall */
+#define CAP_ALL          (CAP_DISK_READ | CAP_DISK_WRITE | CAP_SCREEN | \
+                          CAP_SHUTDOWN | CAP_SIGNAL | CAP_SYSCALL)
+
 struct task_struct {
     u32 pid;
     u32 ecx, edx, ebx, ebp, esi, edi;
@@ -28,12 +38,23 @@ struct task_struct {
     struct list_head children;
     struct list_head sibling;
 
+    /* ---- 准则三：动态优先级调度 ---- */
+    u8   priority;        /* base priority 0-255 (higher = more CPU) */
+    u8   dynamic_boost;   /* temporary boost from IRQ interaction */
+    u32  boost_expire;    /* tick count when boost decays */
+
+    /* ---- 准则四：Capability Tokens ---- */
+    u32  caps;            /* capability bitmask */
+
+    /* ---- 准则一：per-task output redirect ---- */
+    int  output_fd;       /* -1=screen, >=0=FD for gfx output redirect */
+
     /* Signal support */
-    u32 pending_signals;       /* bitmap of pending signals (bits 1-31) */
-    u32 blocked_signals;       /* blocked signal mask */
-    u32 sig_handlers[32];      /* user-space handler addresses (0=SIG_DFL) */
-    u32 sig_saved_eip;         /* saved user EIP for sigreturn */
-    u32 sig_saved_esp;         /* saved user ESP for sigreturn */
+    u32 pending_signals;
+    u32 blocked_signals;
+    u32 sig_handlers[32];
+    u32 sig_saved_eip;
+    u32 sig_saved_esp;
 };
 
 /* Signal numbers */
@@ -58,4 +79,10 @@ void task_yield(void);
 void schedule(registers_t *r);
 u32  task_next_pid(void);
 int  task_send_signal(u32 pid, int sig);
-void task_check_signals(registers_t *r);     /* for fork */
+void task_check_signals(registers_t *r);
+
+/* Capability management (准则四) */
+void task_boost_priority(u32 pid, u8 amount);  /* IRQ-triggered boost (准则三) */
+void task_decay_boosts(void);                   /* periodic decay (准则三) */
+bool task_has_cap(u32 pid, u32 cap);
+int  task_drop_cap(u32 cap);                    /* remove capability from self */

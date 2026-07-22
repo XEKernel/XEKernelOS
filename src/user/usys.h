@@ -39,6 +39,9 @@ extern "C" {
 #define SYS_DUP        33
 #define SYS_DUP2       34
 #define SYS_PIPE       35
+#define SYS_FWRITE     36
+#define SYS_SET_OUTFD  37
+#define SYS_FSYNC      38
 
 static inline int syscall4(int num, int a1, int a2, int a3) {
     int ret;
@@ -91,6 +94,11 @@ static inline int  sys_lseek(int fd, int off, int whence) { return syscall4(SYS_
 static inline int  sys_dup(int fd)               { return syscall1(SYS_DUP, fd); }
 static inline int  sys_dup2(int old, int nw)     { return syscall4(SYS_DUP2, old, nw, 0); }
 static inline int  sys_pipe(int fds[2])           { return syscall1(SYS_PIPE, (int)fds); }
+static inline int  sys_fwrite(int fd, const char *s, int len) { return syscall4(SYS_FWRITE, fd, (int)s, len); }
+static inline int  sys_set_outfd(int fd)          { return syscall1(SYS_SET_OUTFD, fd); }
+static inline int  sys_fsync(int fd, const char *name) { return syscall4(SYS_FSYNC, fd, (int)name, 0); }
+static inline int  sys_open(const char *name)     { return syscall1(SYS_OPEN, (int)name); }
+static inline void sys_close(int fd)              { syscall1(SYS_CLOSE, fd); }
 static inline void sys_time(char *buf)          { syscall1(SYS_TIME, (int)buf); }
 
 #ifdef __cplusplus

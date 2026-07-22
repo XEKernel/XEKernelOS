@@ -13,15 +13,28 @@
 #include "lib/ports.h"
 
 #define MAX_FD 16
+#define PIPE_BUF_SZ 4096
+
+/* Pipe ring buffer shared by read/write FDs */
+struct pipe_t {
+    u8   buf[PIPE_BUF_SZ];
+    u32  rpos;    /* read position */
+    u32  wpos;    /* write position */
+    u32  count;   /* bytes available to read */
+    int  refs;    /* reference count (2 when both ends open) */
+};
 
 /* File descriptor table */
 static u8  *fd_buf[MAX_FD] = {nullptr};
 static u32  fd_size[MAX_FD] = {0};
 static u32  fd_pos[MAX_FD]  = {0};    /* current read/write position */
-static u8   fd_type[MAX_FD] = {0};    /* 0=unused, 1=file, 2=pipe */
+static u8   fd_type[MAX_FD] = {0};    /* 0=unused, 1=file, 2=pipe-read, 3=pipe-write */
 
 /* Heap break — starts at 0x10000000 (PDE 64, clear of kernel PDEs) */
 static u32 user_break = 0x10000000;
+
+/* Output redirect: when >=0, gfx_puts/putc write to this FD instead of screen */
+static int g_output_fd = -1;
 
 static void sys_write(registers_t *r) {
     char *str = (char *)r->ebx;
@@ -32,15 +45,73 @@ static void sys_write(registers_t *r) {
     r->eax = len;
 }
 
+static void sys_fwrite(registers_t *r) {
+    u32 fd  = r->ebx;
+    char *str = (char *)r->ecx;
+    u32 len = r->edx;
+    if (len > 4096) len = 4096;
+
+    if (fd >= MAX_FD || !fd_buf[fd]) { r->eax = (u32)-1; return; }
+
+    u8 typ = fd_type[fd];
+    if (typ == 3) {  /* pipe write-end */
+        pipe_t *pipe = (pipe_t *)fd_buf[fd];
+        u32 avail = PIPE_BUF_SZ - pipe->count;
+        if (len > avail) len = avail;
+        if (len == 0) { r->eax = 0; return; }
+        for (u32 i = 0; i < len; i++) {
+            pipe->buf[pipe->wpos] = (u8)(str ? str[i] : 0);
+            pipe->wpos = (pipe->wpos + 1) % PIPE_BUF_SZ;
+        }
+        pipe->count += len;
+        r->eax = len;
+        return;
+    }
+
+    if (typ == 1) {  /* file: append */
+        u32 space = fd_size[fd] - fd_pos[fd];
+        if (len > space) len = space;
+        if (len == 0) { r->eax = 0; return; }
+        for (u32 i = 0; i < len; i++)
+            fd_buf[fd][fd_pos[fd] + i] = (u8)(str ? str[i] : 0);
+        fd_pos[fd] += len;
+        r->eax = len;
+        return;
+    }
+
+    r->eax = (u32)-1;
+}
+
 static void sys_read(registers_t *r) {
-    char *buf = (char *)r->ebx;
+    /* Support both legacy (ebx=buf, ecx=max) and FD-based:
+       if ebx < 256 and fd_buf[ebx] is a pipe, read from pipe. */
+    u32 fd_or_buf = r->ebx;
     int max = (int)r->ecx;
 
+    /* FD-based pipe read: ebx=fd */
+    if (fd_or_buf < MAX_FD && fd_buf[fd_or_buf] && fd_type[fd_or_buf] == 2) {
+        pipe_t *pipe = (pipe_t *)fd_buf[fd_or_buf];
+        char *buf = (char *)r->ecx;
+        if (!buf || max <= 0 || max > 4096) { r->eax = 0; return; }
+        u32 n = pipe->count;
+        if (n > (u32)max) n = (u32)max;
+        if (n == 0) { r->eax = 0; return; }  /* empty pipe */
+        for (u32 i = 0; i < n; i++) {
+            buf[i] = pipe->buf[pipe->rpos];
+            pipe->rpos = (pipe->rpos + 1) % PIPE_BUF_SZ;
+        }
+        pipe->count -= n;
+        r->eax = n;
+        return;
+    }
+
+    /* Legacy: keyboard readline */
+    char *buf = (char *)r->ebx;
     if (max <= 0 || max > 4096 || !buf) { r->eax = 0; return; }
     kb_readline(buf, max - 1);
     buf[max - 1] = 0;
     int n = 0; while (buf[n]) n++;
-    __asm__ volatile("wbinvd");  /* flush caches for PSE→4KB page coherency */
+    __asm__ volatile("wbinvd");
     r->eax = n;
 }
 
@@ -364,7 +435,17 @@ static void sys_waitpid(registers_t *r) {
 static void sys_close(registers_t *r) {
     u32 fd = r->ebx;
     if (fd >= MAX_FD || !fd_buf[fd]) { r->eax = (u32)-1; return; }
-    kfree(fd_buf[fd]);
+
+    if (fd_type[fd] == 2 || fd_type[fd] == 3) {
+        /* Pipe: decrement refcount, only free when both ends closed */
+        pipe_t *pipe = (pipe_t *)fd_buf[fd];
+        pipe->refs--;
+        if (pipe->refs <= 0)
+            kfree(pipe);
+    } else {
+        kfree(fd_buf[fd]);
+    }
+
     fd_buf[fd] = nullptr;
     fd_size[fd] = 0;
     fd_pos[fd] = 0;
@@ -437,9 +518,15 @@ static void sys_dup2(registers_t *r) {
 static void sys_pipe(registers_t *r) {
     u32 *fds = (u32 *)r->ebx;  /* int fds[2] */
     if (!fds) { r->eax = (u32)-1; return; }
-    /* Allocate a shared buffer for the pipe */
-    u8 *pbuf = (u8 *)kmalloc(4096);
-    if (!pbuf) { r->eax = (u32)-1; return; }
+
+    /* Allocate shared pipe ring buffer */
+    pipe_t *pipe = (pipe_t *)kmalloc(sizeof(pipe_t));
+    if (!pipe) { r->eax = (u32)-1; return; }
+    pipe->rpos = 0;
+    pipe->wpos = 0;
+    pipe->count = 0;
+    pipe->refs = 2;  /* read-end + write-end */
+
     /* Find two free FDs */
     int rfd = -1, wfd = -1;
     for (int i = 0; i < MAX_FD; i++) {
@@ -448,17 +535,19 @@ static void sys_pipe(registers_t *r) {
             else if (wfd < 0) { wfd = i; break; }
         }
     }
-    if (wfd < 0) { kfree(pbuf); r->eax = (u32)-1; return; }
-    /* Both FDs share the same buffer.
-       type=2 for the read end, type=3 for the write end */
-    fd_buf[rfd] = pbuf;
-    fd_size[rfd] = 4096;
-    fd_pos[rfd] = 0;
-    fd_type[rfd] = 2;  /* pipe read */
-    fd_buf[wfd] = pbuf;
-    fd_size[wfd] = 4096;
-    fd_pos[wfd] = 0;
-    fd_type[wfd] = 3;  /* pipe write */
+    if (wfd < 0) { kfree(pipe); r->eax = (u32)-1; return; }
+
+    /* Both FDs point to the same pipe struct.
+       read-end uses type=2, write-end uses type=3 */
+    fd_buf[rfd]   = (u8 *)pipe;
+    fd_size[rfd]  = PIPE_BUF_SZ;
+    fd_pos[rfd]   = 0;
+    fd_type[rfd]  = 2;
+    fd_buf[wfd]   = (u8 *)pipe;
+    fd_size[wfd]  = PIPE_BUF_SZ;
+    fd_pos[wfd]   = 0;
+    fd_type[wfd]  = 3;
+
     fds[0] = rfd;
     fds[1] = wfd;
     r->eax = 0;
@@ -505,18 +594,56 @@ static void sys_cls(registers_t *r) {
 }
 
 static void sys_gfx_putc(registers_t *r) {
-    gfx.putc((char)r->ebx);
+    if (g_output_fd >= 0 && g_output_fd < MAX_FD && fd_buf[g_output_fd]) {
+        /* Redirect to file: append one byte */
+        if (fd_pos[g_output_fd] < fd_size[g_output_fd]) {
+            fd_buf[g_output_fd][fd_pos[g_output_fd]++] = (u8)(r->ebx);
+        }
+    } else {
+        gfx.putc((char)r->ebx);
+    }
     r->eax = 0;
 }
 
 static void sys_gfx_puts(registers_t *r) {
-    gfx.puts_utf8((const char *)r->ebx);
+    if (g_output_fd >= 0 && g_output_fd < MAX_FD && fd_buf[g_output_fd]) {
+        /* Redirect to file: append string */
+        const char *s = (const char *)r->ebx;
+        u8 *buf = fd_buf[g_output_fd];
+        u32 size = fd_size[g_output_fd];
+        u32 *pos = &fd_pos[g_output_fd];
+        while (*s && *pos < size)
+            buf[(*pos)++] = (u8)(*s++);
+    } else {
+        gfx.puts_utf8((const char *)r->ebx);
+    }
     r->eax = 0;
 }
 
 static void sys_gfx_set_fg(registers_t *r) {
     gfx.set_fg((u8)r->ebx);
     r->eax = 0;
+}
+
+static void sys_set_outfd(registers_t *r) {
+    int fd = (int)r->ebx;
+    /* -1 = restore screen, >=0 = redirect to FD */
+    if (fd < -1) fd = -1;
+    if (fd >= MAX_FD) fd = -1;
+    if (fd >= 0 && !fd_buf[fd]) fd = -1;
+    r->eax = g_output_fd;  /* return previous */
+    g_output_fd = fd;
+}
+
+static void sys_fsync(registers_t *r) {
+    u32 fd = r->ebx;
+    const char *name = (const char *)r->ecx;
+    if (fd >= MAX_FD || !fd_buf[fd] || !name || fd_type[fd] != 1) {
+        r->eax = (u32)-1; return;
+    }
+    /* Write FD buffer to disk file */
+    int result = fat_write_file(name, fd_buf[fd], (int)fd_pos[fd]);
+    r->eax = (u32)result;
 }
 
 extern "C" void syscall_handler(registers_t *r) {
@@ -603,6 +730,15 @@ extern "C" void syscall_handler(registers_t *r) {
         break;
     case SYS_PIPE:
         sys_pipe(r);
+        break;
+    case SYS_FWRITE:
+        sys_fwrite(r);
+        break;
+    case SYS_SET_OUTFD:
+        sys_set_outfd(r);
+        break;
+    case SYS_FSYNC:
+        sys_fsync(r);
         break;
     default:
         r->eax = (u32)-1;

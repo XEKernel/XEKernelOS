@@ -36,6 +36,9 @@
 #define SYS_DUP        33
 #define SYS_DUP2       34
 #define SYS_PIPE       35
+#define SYS_FWRITE     36
+#define SYS_SET_OUTFD  37
+#define SYS_FSYNC      38
 
 #ifdef __cplusplus
 extern "C" {

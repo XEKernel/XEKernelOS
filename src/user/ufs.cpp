@@ -1,6 +1,9 @@
 /* 准则五: User-space FAT12 implementation (read-only)
    Uses SYS_DISK_READ raw sector reads. Self-contained — no kernel dependency. */
 
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wunused-variable"
+
 #include "ufs.h"
 #include "libc.h"
 #include "lib/types.h"
@@ -30,16 +33,22 @@ static fat_bpb bpb;
 static int  data_sec, fat_sec, root_sec;
 static u16  cur_dir_cluster = 0;
 
-/* Read one 512-byte sector into buf */
+/* Read one 512-byte sector into buf. Returns 0 on success, -1 on error.
+   Uses volatile + memory clobber to defeat compiler return-value optimization. */
 static int disk_read(u32 lba, u8 *buf) {
-    int ret;
-    _SYSCALL2(SYS_DISK_READ, (int)lba, (int)buf, ret);
-    return ret;
+    volatile int result = -1;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(result)
+        : "a"(SYS_DISK_READ), "b"((int)lba), "c"((int)buf)
+        : "memory"
+    );
+    return result;
 }
 
 /* Convert FAT12 directory entry (11-char 8.3) to readable string */
 static void name83_to_str(u8 *e, char *name) {
-    int i = 0, j = 0;
+    int j = 0;
     for (int k = 0; k < 8 && e[k] != ' '; k++) name[j++] = e[k];
     if (e[8] != ' ') { name[j++] = '.'; for (int k = 8; k < 11 && e[k] != ' '; k++) name[j++] = e[k]; }
     name[j] = 0;

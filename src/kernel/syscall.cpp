@@ -816,18 +816,32 @@ extern "C" void syscall_handler(registers_t *r) {
         r->eax = (u32)(current_task ? task_drop_cap((u32)r->ebx) : -1);
         break;
     case SYS_DISK_READ:
-        /* 准则五: raw sector read — user-space FS library */
+        /* 准则五: raw sector read — copy through kernel buffer
+           because ata_read needs kernel-addressable memory (PSE identity-mapped),
+           not user virtual addresses. */
         if (current_task && !(current_task->caps & CAP_DISK_READ)) {
             r->eax = (u32)-1; break;
         }
-        r->eax = (u32)ata_read((u32)r->ebx, 1, (u16 *)r->ecx);
+        {
+            static u8 kbuf[512] __attribute__((aligned(4)));
+            int res = ata_read((u32)r->ebx, 1, (u16 *)kbuf);
+            if (res == 0) {
+                u8 *ubuf = (u8 *)r->ecx;
+                for (int i = 0; i < 512; i++) ubuf[i] = kbuf[i];
+            }
+            r->eax = (u32)res;
+        }
         break;
     case SYS_DISK_WRITE:
         if (current_task && !(current_task->caps & CAP_DISK_WRITE)) {
             r->eax = (u32)-1; break;
         }
-        r->eax = (u32)ata_write((u32)r->ebx, 1, (const u16 *)r->ecx);
-        break;
+        {
+            static u8 kwbuf[512] __attribute__((aligned(4)));
+            const u8 *ubuf = (const u8 *)r->ecx;
+            for (int i = 0; i < 512; i++) kwbuf[i] = ubuf[i];
+            r->eax = (u32)ata_write((u32)r->ebx, 1, (const u16 *)kwbuf);
+        }
     default:
         r->eax = (u32)-1;
         break;

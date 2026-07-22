@@ -70,7 +70,10 @@ static int load_flat_binary(const char *path, const char *args) {
     __asm__ volatile("cli");  /* prevent PIT preemption during init */
 
     PagingManager *user_pd = new PagingManager();
-    map_user_pages(user_pd, USER_LOAD_ADDR, (u32)sz);
+    /* Map binary pages — at least 4KB so .bss is covered */
+    u32 map_sz = (u32)sz;
+    if (map_sz < 0x1000) map_sz = 0x1000;
+    map_user_pages(user_pd, USER_LOAD_ADDR, map_sz);
     map_user_pages(user_pd, USER_STACK_TOP - USER_STACK_SZ, USER_STACK_SZ);
     map_user_fb(user_pd);  /* so ring3 can access framebuffer */
 

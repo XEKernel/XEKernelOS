@@ -227,6 +227,7 @@ static void cmd_mouse(void) {
 
 static const char ring3_msg[] = "Ring3: Hello!";
 
+__attribute__((unused))
 static void user_loop(void) {
     u32 addr = (u32)ring3_msg;
     __asm__ volatile(

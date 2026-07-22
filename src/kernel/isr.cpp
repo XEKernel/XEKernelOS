@@ -38,16 +38,15 @@ extern "C" void c_isr_handler(registers_t *r) {
         outb(0x20, 0x20);
 #if 1  /* Ctrl+C → SIGINT */
         if (kb_ctrl_c()) {
-            /* Send SIGINT to current foreground task (if user-mode) */
             if (current_task && (r->cs & 3) == 3) {
                 task_send_signal(current_task->pid, SIGINT);
             }
         }
 #endif
+        /* Update mouse cursor at 100Hz regardless of current task */
+        gfx.mcursor_update();
+
         schedule(r);
-        /* If returning to user mode, ensure user CR3 is loaded.
-           c_isr_handler loaded kernel CR3 on entry; schedule may not
-           have switched CR3 if the same task was re-picked. */
         if ((r->cs & 3) == 3 && current_task->paging)
             current_task->paging->load();
         return;
@@ -109,13 +108,7 @@ extern "C" void c_isr_handler(registers_t *r) {
         /* Check and deliver pending signals before returning to user */
         task_check_signals(r);
 
-        serial_write_char('e');
-        serial_write_char('0'+r->eax);
-        serial_write_char(' ');
         if (current_task && current_task->paging)
             current_task->paging->load();
-        serial_write_char('f');
-        serial_write_char('0'+r->eax);
-        serial_write_char(' ');
     }
 }

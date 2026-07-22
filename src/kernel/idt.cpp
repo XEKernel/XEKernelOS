@@ -27,7 +27,7 @@ void idt_init(void) {
         idt[0x80].offset_low  = addr & 0xFFFF;
         idt[0x80].selector    = 0x18;
         idt[0x80].zero        = 0;
-        idt[0x80].flags       = 0xEE;
+        idt[0x80].flags       = 0xEF;  /* trap gate — keeps IF set, allows PIT during syscalls */
         idt[0x80].offset_high = (addr >> 16) & 0xFFFF;
     }
     struct { u16 limit; u32 base; } __attribute__((packed)) idtr;

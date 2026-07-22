@@ -46,6 +46,13 @@ if os.path.exists(test_elf):
 else:
     print(f"Warning: {test_elf} not found, skipping")
 
+# User demo program
+demo_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'demo.bin')
+if os.path.exists(demo_bin):
+    add_binary("DEMO    BIN", demo_bin)
+else:
+    print(f"Warning: {demo_bin} not found, skipping")
+
 
 def name_to_83(name_str):
     """Convert "README  TXT" to 11 bytes."""

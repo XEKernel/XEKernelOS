@@ -69,9 +69,6 @@ u8 Keyboard::read_scan() {
         if (st & 1) {
             u8 data = inb(KB_DATA);
             if (st & 0x20) { mouse.feed_byte(data); continue; }
-            serial_write_char('K');
-            serial_write_char("0123456789ABCDEF"[data>>4]);
-            serial_write_char("0123456789ABCDEF"[data&15]);
             return data;
         }
         /* Busy-wait without cli — feed_byte has its own pushf/popf
@@ -120,6 +117,9 @@ int Keyboard::ctrl_c() {
     u8 st = inb(KB_STATUS);
     if (!(st & 1)) return 0;
     u8 data = inb(KB_DATA);
+
+    /* Mouse data — forward to mouse driver, don't treat as keyboard */
+    if (st & 0x20) { mouse.feed_byte(data); return 0; }
 
     if (data == 0x1D)      { ctrl_ = 1; return 0; }
     if (data == 0x9D)      { ctrl_ = 0; return 0; }

@@ -55,6 +55,11 @@ HELLO_BIN  = $(BLDDIR)/hello.bin
 
 USER_ASM   = $(SRCDIR)/user/hello.asm
 
+# User-space demo program (flat binary)
+DEMO_SRC   = $(SRCDIR)/user/demo.cpp
+DEMO_ELF   = $(BLDDIR)/demo.elf
+DEMO_BIN   = $(BLDDIR)/demo.bin
+
 CXXFLAGS = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
            -fno-exceptions -fno-rtti -fno-use-cxa-atexit -std=c++17 \
            -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
@@ -74,7 +79,7 @@ USHELL_ELF   = $(BLDDIR)/ushell.elf
 USHELL_BIN   = $(BLDDIR)/ushell.bin
 USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h
 
-all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG)
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG) $(DEMO_BIN)
 
 # ... existing targets ...
 
@@ -139,9 +144,17 @@ $(USHELL_BIN): $(USHELL_ELF)
 $(USHELL_HDR): $(USHELL_BIN)
 	python tools/binary_to_header.py $< ushell_blob > $@
 
+# User demo program — uses libc.h
+$(DEMO_ELF): $(DEMO_SRC) $(SRCDIR)/user/libc.h $(SRCDIR)/user/usys.h $(SRCDIR)/user/user.ld | $(BLDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR)/user -c $< -o $(BLDDIR)/demo.o
+	$(LD) $(LDFLAGS) -T $(SRCDIR)/user/user.ld $(BLDDIR)/demo.o -o $@
+
+$(DEMO_BIN): $(DEMO_ELF)
+	$(OBJCOPY) -O binary $< $@
+
 # Build FAT12 disk image with CJK font injected at LBA 2048
 DISK_SIZE = 4194304  # 4MB
-$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) tools/mkdisk.py
+$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) $(DEMO_BIN) tools/mkdisk.py
 	python tools/mkdisk.py
 	@echo "Expanding disk to 4MB and injecting font at LBA 2048..."
 	@python -c "import os; sz=os.path.getsize('$@'); open('$@','ab').write(b'\x00'*($(DISK_SIZE)-sz)); f=open('$(FONT_BIN)','rb').read(); d=open('$@','r+b'); d.seek(2048*512); d.write(f); print(f'Font {len(f)}B injected')"

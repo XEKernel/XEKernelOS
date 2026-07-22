@@ -228,24 +228,26 @@ void GfxDriver::mcursor_draw() {
 }
 
 void GfxDriver::mcursor_update() {
-    /* Save old cursor state explicitly — avoid shared-state confusion */
-    int old_x = cur_x_, old_y = cur_y_;
-    u32 old_save[64];
-    for (int i = 0; i < 64; i++) old_save[i] = cur_save_[i];
+    if (w_ <= 0 || h_ <= 0) return;
 
-    /* Step 1: restore old cursor position */
-    for (int y = 0; y < 8; y++) {
-        int fy = old_y + y;
-        if (fy < 0 || fy >= h_) continue;
-        for (int x = 0; x < 8; x++) {
-            int fx = old_x + x;
-            if (fx < 0 || fx >= w_) continue;
-            int off = fy * pitch_ + fx * 4;
-            *(u32 *)(fb_ + off) = old_save[y * 8 + x];
+    int old_x = cur_x_, old_y = cur_y_;
+
+    /* XOR-out old cursor (hollow 8x8 box, 1px border) */
+    if (old_x >= 0 && old_y >= 0) {
+        for (int y = 0; y < 8; y++) {
+            int fy = old_y + y;
+            if (fy < 0 || fy >= h_) continue;
+            for (int x = 0; x < 8; x++) {
+                if (x > 0 && x < 7 && y > 0 && y < 7) continue; /* hollow */
+                int fx = old_x + x;
+                if (fx < 0 || fx >= w_) continue;
+                int off = fy * pitch_ + fx * 4;
+                *(u32 *)(fb_ + off) ^= 0x00FFFFFF;  /* XOR white */
+            }
         }
     }
 
-    /* Step 2: get new cursor position */
+    /* Get new position */
     int mx, my, mb;
     mouse_get(&mx, &my, &mb);
     cur_x_ = mx - 4; if (cur_x_ < 0) cur_x_ = 0;
@@ -253,14 +255,14 @@ void GfxDriver::mcursor_update() {
     if (cur_x_ + 8 > w_) cur_x_ = w_ - 8;
     if (cur_y_ + 8 > h_) cur_y_ = h_ - 8;
 
-    /* Step 3: save new pixels & draw cursor */
+    /* XOR-in new cursor */
     for (int y = 0; y < 8; y++) {
         int fy = cur_y_ + y;
         for (int x = 0; x < 8; x++) {
+            if (x > 0 && x < 7 && y > 0 && y < 7) continue;
             int fx = cur_x_ + x;
             int off = fy * pitch_ + fx * 4;
-            cur_save_[y * 8 + x] = *(u32 *)(fb_ + off);
-            *(u32 *)(fb_ + off) = 0x00FF0000;
+            *(u32 *)(fb_ + off) ^= 0x00FFFFFF;
         }
     }
 }

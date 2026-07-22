@@ -54,7 +54,7 @@ void Mouse::init() {
     mwrite(0xF6);                   /* set defaults */
     if (rready()) inb(0x60);
 
-    mwrite(0xE8); mwrite(0x02);    /* set resolution: 4 counts/mm */
+    mwrite(0xE8); mwrite(0x03);    /* set resolution: 8 counts/mm */
     if (rready()) inb(0x60);
     if (rready()) inb(0x60);
 
@@ -106,6 +106,12 @@ void Mouse::feed_byte(u8 data) {
         /* 8-bit signed movement with overflow sign extension */
         int dx = (b & 0x10) ? (int)(pkt_[1] | 0xFFFFFF00) : (int)pkt_[1];
         int dy = (b & 0x20) ? (int)(pkt_[2] | 0xFFFFFF00) : (int)pkt_[2];
+
+        /* Apply sensitivity multiplier + light acceleration */
+        dx *= 3;
+        dy *= 3;
+        if (dx > 32 || dx < -32) { dx = (dx * 3) / 2; }
+        if (dy > 32 || dy < -32) { dy = (dy * 3) / 2; }
 
         mx_ += dx;
         my_ -= dy;   /* PS/2 Y is inverted */

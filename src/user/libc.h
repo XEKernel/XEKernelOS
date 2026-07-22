@@ -16,6 +16,7 @@ extern "C" {
         : "a"(num), "b"(a1), "c"(a2), "d"(a3) \
         : "memory")
 #define _SYSCALL1(num, a1, retvar)  _SYSCALL4(num, a1, 0, 0, retvar)
+#define _SYSCALL2(num, a1, a2, retvar) _SYSCALL4(num, a1, a2, 0, retvar)
 #define _SYSCALL0(num, retvar)      _SYSCALL4(num, 0, 0, 0, retvar)
 
 /* ---- raw wrappers that write result to caller's variable ---- */

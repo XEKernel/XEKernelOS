@@ -136,9 +136,10 @@ $(TEST_ELF): $(TEST_ELF_O)
 	@echo "  ELF test: $$(wc -c < $@)B"
 
 # User-space shell — compile & embed in kernel
-$(USHELL_ELF): $(USHELL_SRC) $(SRCDIR)/user/usys.h $(SRCDIR)/user/user.ld | $(BLDDIR)
-	$(CXX) $(CXXFLAGS) -I$(SRCDIR)/user -c $< -o $(BLDDIR)/ushell.o
-	$(LD) $(LDFLAGS) -T $(SRCDIR)/user/user.ld $(BLDDIR)/ushell.o -o $@
+$(USHELL_ELF): $(USHELL_SRC) $(SRCDIR)/user/usys.h $(SRCDIR)/user/ufs.h $(SRCDIR)/user/user.ld | $(BLDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR)/user -c $(SRCDIR)/user/ushell.cpp -o $(BLDDIR)/ushell1.o
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR)/user -c $(SRCDIR)/user/ufs.cpp    -o $(BLDDIR)/ushell2.o
+	$(LD) $(LDFLAGS) -T $(SRCDIR)/user/user.ld $(BLDDIR)/ushell1.o $(BLDDIR)/ushell2.o -o $@
 
 $(USHELL_BIN): $(USHELL_ELF)
 	$(OBJCOPY) -O binary $< $@

@@ -349,12 +349,12 @@ static void cmd_usersh(void) {
 
     gfx_clear(COLOR_BLACK);
 
-    /* Create user page directory and map shell + stack pages as user-accessible.
-       (Kernel PDEs no longer have PAGE_USER after security fix.)
-       Shell at 0x400000, user stack at 0x420000 (both in PDE 1, avoids
-       touching PDE 0 which contains kernel code). */
+    /* Create user page directory and map shell + stack pages.
+       Shell at 0x400000, user stack at 0x420000.
+       Allocate generous pages: blob only covers .text/.rodata/.data,
+       .bss extends past the flat binary. Use blob_len + 8KB padding. */
     PagingManager *user_pd = new PagingManager();
-    u32 code_pages = (ushell_blob_len + 0xFFF) / 0x1000;
+    u32 code_pages = (ushell_blob_len + 0x1FFF) / 0x1000;  /* +8KB for .bss */
     u32 stack_top  = 0x420000;
     u32 stack_base = stack_top - 0x10000;  /* 64KB stack */
     for (u32 i = 0; i < code_pages; i++)

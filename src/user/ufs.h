@@ -11,3 +11,4 @@ int  ufs_cd(const char *name); /* change directory */
 int  ufs_cat(const char *name); /* print file content to serial */
 int  ufs_read_file(const char *name, char *buf, int max);
 int  ufs_size(const char *name); /* returns file size, -1 if not found */
+void ufs_cwd(char *out, int max); /* get current directory path */

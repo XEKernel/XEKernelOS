@@ -3,6 +3,7 @@
 
 #include "ufs.h"
 #include "libc.h"
+#include "lib/types.h"
 
 /* FAT12 BPB layout */
 struct fat_bpb {
@@ -259,18 +260,27 @@ int ufs_size(const char *name) {
     return -1;
 }
 
+/* Current working directory path tracking */
+static char cwd_path[64] __attribute__((section(".data"))) = "\\";
+
+void ufs_cwd(char *out, int max) {
+    int i = 0;
+    while (cwd_path[i] && i < max - 1) { out[i] = cwd_path[i]; i++; }
+    out[i] = 0;
+}
+
 int ufs_cd(const char *name) {
-    /* "/" = root */
-    if (!name || name[0] == 0 || (name[0] == '\\' && name[1] == 0)) {
+    if (!name || name[0] == 0) return 0;
+    if ((name[0] == '\\' || name[0] == '/') && name[1] == 0) {
         cur_dir_cluster = 0;
+        cwd_path[0] = '\\'; cwd_path[1] = 0;
         return 0;
     }
-    /* ".." = parent (just go to root for now) */
     if (name[0] == '.' && name[1] == '.' && name[2] == 0) {
         cur_dir_cluster = 0;
+        cwd_path[0] = '\\'; cwd_path[1] = 0;
         return 0;
     }
-    /* Search for directory entry */
     u8 fname[11];
     str_to_name83(name, fname);
     u8 sec[512];
@@ -282,12 +292,16 @@ int ufs_cd(const char *name) {
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0) return -1;
                 if (sec[i] == 0xE5) continue;
-                if (!(sec[i+11] & 0x10)) continue;  /* not a dir */
+                if (!(sec[i+11] & 0x10)) continue;
                 int match = 1;
                 for (int k = 0; k < 11; k++)
                     if (sec[i+k] != fname[k]) { match = 0; break; }
                 if (match) {
                     cur_dir_cluster = sec[i+26] | (sec[i+27] << 8);
+                    int j = 0; while (cwd_path[j]) j++;
+                    if (j > 0 && cwd_path[j-1] != '\\') cwd_path[j++] = '\\';
+                    int n = 0; while (name[n] && j < 63) cwd_path[j++] = name[n++];
+                    cwd_path[j] = 0;
                     return 0;
                 }
             }

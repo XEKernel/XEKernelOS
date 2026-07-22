@@ -1,6 +1,9 @@
-/* XEKernelOS User-Space Shell — Ring3 */
+/* XEKernelOS User-Space Shell — Ring3
+   准则五: 只读 FS 操作使用 ufs (用户态 FAT12 库)
+   写操作暂用内核 syscall */
 
 #include "usys.h"
+#include "ufs.h"
 
 #define COLOR_BLACK   0x00
 #define COLOR_DGRAY   0x08
@@ -62,7 +65,7 @@ static int parse_redirect(const char *args, const char **args_out, char *filenam
 
 static void prompt(void) {
     char cwd[64];
-    fat_cwd(cwd, 64);
+    ufs_cwd(cwd, 64);
     gfx_set_fg(COLOR_LGREEN);
     gfx_puts("user");
     gfx_set_fg(COLOR_LCYAN);
@@ -101,7 +104,7 @@ static void cmd_help(void) {
     gfx_puts("  EXIT       退出\n");
 }
 
-static void cmd_ls(void)  { fat_dir(); }
+static void cmd_ls(void)  { ufs_ls(); }
 static void cmd_cls(void) { gfx_cls(COLOR_BLACK); }
 
 static void ok_msg(void) {
@@ -159,7 +162,7 @@ static void cmd_cp(const char *args) {
     while (*args == ' ') args++;
     if (!*args) { err_msg(" 用法: CP <源> <目标>\n"); return; }
     static char cpbuf[1024] __attribute__((section(".data"))) = {0};
-    int sz = fat_read(src, cpbuf, 1023);
+    int sz = ufs_read_file(src, cpbuf, 1023);
     if (sz <= 0) { err_msg(" 源文件不存在\n"); return; }
     if (fat_write(args, cpbuf, sz) == 0) ok_msg();
     else err_msg(" 写入失败\n");
@@ -242,8 +245,8 @@ static void cmd_tmp(const char *args) {
 
 static void cmd_cd(const char *args) {
     while (*args == ' ') args++;
-    if (!*args) { fat_cd("\\"); return; }
-    if (fat_cd(args)) {
+    if (!*args) { ufs_cd("\\"); return; }
+    if (ufs_cd(args)) {
         gfx_set_fg(COLOR_LRED);
         gfx_puts(" 目录不存在\n");
         gfx_set_fg(COLOR_LGRAY);
@@ -259,7 +262,7 @@ static void cmd_cat(const char *args) {
         return;
     }
     static char fbuf[1024] __attribute__((section(".data"))) = {0};
-    int sz = fat_read(args, fbuf, 1023);
+    int sz = ufs_read_file(args, fbuf, 1023);
     if (sz <= 0) {
         gfx_set_fg(COLOR_LRED);
         gfx_puts(" 文件不存在\n");
@@ -316,7 +319,7 @@ static void cmd_run(const char *args) {
     while (*args == ' ') args++;
     if (!*args) { err_msg(" 用法: RUN <脚本文件>\n"); return; }
     static char sbuf[2048] __attribute__((section(".data"))) = {0};
-    int sz = fat_read(args, sbuf, 2047);
+    int sz = ufs_read_file(args, sbuf, 2047);
     if (sz <= 0) { err_msg(" 脚本文件不存在\n"); return; }
     sbuf[sz] = 0;
 
@@ -397,6 +400,7 @@ extern "C" void _start(void) {
     char cmd[32];
 
     gfx_cls(COLOR_BLACK);
+    ufs_init(); /* 准则五: init user-space FAT12 */
     gfx_set_fg(COLOR_LCYAN);
     gfx_puts("XEKernelOS 用户态 Shell\n");
     gfx_set_fg(COLOR_DGRAY);

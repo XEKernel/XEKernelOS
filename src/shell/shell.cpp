@@ -372,9 +372,7 @@ static void cmd_usersh(void) {
         current_task->state = TASK_RUNNING;
 
     /* Enter ring3 via direct 5-entry iretd */
-    serial_write_str("us: enter_user_mode\n");
     enter_user_mode(0x400000, stack_top, user_pd, 0, nullptr);
-    serial_write_str("us: returned!\n");
 
     /* User task exited (SYS_EXIT restored g_entry_esp).
        Re-enable interrupts. */

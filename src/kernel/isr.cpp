@@ -24,8 +24,6 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     int from_user = ((r->cs & 3) == 3);
     if (from_user) {
-        static int first = 1;
-        if (first) { serial_write_str("us: first ring3 syscall\n"); first = 0; }
         PagingManager::get_kernel_paging()->load();
     }
 

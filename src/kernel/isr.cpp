@@ -24,6 +24,8 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     int from_user = ((r->cs & 3) == 3);
     if (from_user) {
+        static int first = 1;
+        if (first) { serial_write_str("us: first ring3 syscall\n"); first = 0; }
         PagingManager::get_kernel_paging()->load();
     }
 
@@ -36,20 +38,21 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     if (vec == 0x20) {
         outb(0x20, 0x20);
-        /* 准则三: Boost foreground task on keyboard activity */
         if (kb_ctrl_c()) {
             if (current_task && (r->cs & 3) == 3) {
                 task_boost_priority(current_task->pid, 5);
                 task_send_signal(current_task->pid, SIGINT);
             }
         }
-        /* Any key activity from keyboard polling boosts the active task */
         if (current_task && current_task->pid != 0)
             task_boost_priority(current_task->pid, 1);
-        /* Update mouse cursor at 100Hz regardless of current task */
         gfx.mcursor_update();
 
-        schedule(r);
+        /* Only reschedule when NOT in ring3 — ring3 tasks have a separate
+           kernel stack and schedule() would corrupt their context by saving
+           the PIT frame instead of the syscall frame. */
+        if ((r->cs & 3) == 0)
+            schedule(r);
         if ((r->cs & 3) == 3 && current_task->paging)
             current_task->paging->load();
         return;

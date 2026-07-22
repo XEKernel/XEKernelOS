@@ -33,17 +33,13 @@ static fat_bpb bpb;
 static int  data_sec, fat_sec, root_sec;
 static u16  cur_dir_cluster = 0;
 
-/* Read one 512-byte sector into buf. Returns 0 on success, -1 on error.
-   Uses volatile + memory clobber to defeat compiler return-value optimization. */
-static int disk_read(u32 lba, u8 *buf) {
-    volatile int result = -1;
+/* Read one 512-byte sector into buf. No return value check — see ufs_init comment. */
+static void disk_read(u32 lba, u8 *buf) {
     __asm__ volatile(
         "int $0x80"
-        : "=a"(result)
-        : "a"(SYS_DISK_READ), "b"((int)lba), "c"((int)buf)
+        : : "a"(SYS_DISK_READ), "b"((int)lba), "c"((int)buf)
         : "memory"
     );
-    return result;
 }
 
 /* Convert FAT12 directory entry (11-char 8.3) to readable string */
@@ -91,15 +87,27 @@ static u16 read_fat(u16 cl) {
 }
 
 /* Read one cluster's sector into buffer */
-static int read_cluster_sector(u16 cl, int sec_idx, u8 *buf) {
+static void read_cluster_sector(u16 cl, int sec_idx, u8 *buf) {
     u32 lba = data_sec + (cl - 2) * bpb.spc + sec_idx;
-    return disk_read(lba, buf);
+    disk_read(lba, buf);
 }
 
 int ufs_init() {
     u8 buf[512];
-    /* Read BPB from sector 0 of second disk (hdb) */
-    if (disk_read(0, buf) < 0) return -1;
+    /* Read BPB from sector 0 via raw syscall — DO NOT check return value
+       (compiler may optimize inline asm outputs, same as ushell kb_read bug).
+       Instead, validate BPB signature directly. */
+    __asm__ volatile(
+        "int $0x80"
+        : : "a"(SYS_DISK_READ), "b"(0), "c"((int)buf)
+        : "memory"
+    );
+
+    /* Validate: FAT12 BPB has "XEKERNEL" OEM name at offset 3 */
+    if (buf[3] != 'X' || buf[4] != 'E' || buf[5] != 'K') {
+        /* BPB not valid — disk read failed or wrong sector */
+        return -1;
+    }
 
     /* Parse BPB */
     for (int i = 0; i < (int)sizeof(fat_bpb); i++)

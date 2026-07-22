@@ -88,6 +88,10 @@ static void sys_read(registers_t *r) {
     buf[max - 1] = 0;
     int n = 0; while (buf[n]) n++;
     __asm__ volatile("wbinvd");
+    /* Invalidate TLB for user buffer pages — kernel writes via PSE,
+       user reads via 4KB page table. Without invlpg, user may read stale TLB. */
+    for (char *p = buf; p < buf + max; p += 0x1000)
+        __asm__ volatile("invlpg %0" : : "m"(*p));
     r->eax = n;
 }
 
@@ -828,6 +832,7 @@ extern "C" void syscall_handler(registers_t *r) {
             if (res == 0) {
                 u8 *ubuf = (u8 *)r->ecx;
                 for (int i = 0; i < 512; i++) ubuf[i] = kbuf[i];
+                __asm__ volatile("invlpg %0" : : "m"(ubuf[0]));
             }
             r->eax = (u32)res;
         }

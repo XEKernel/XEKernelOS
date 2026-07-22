@@ -354,7 +354,7 @@ static void cmd_usersh(void) {
        Allocate generous pages: blob only covers .text/.rodata/.data,
        .bss extends past the flat binary. Use blob_len + 8KB padding. */
     PagingManager *user_pd = new PagingManager();
-    u32 code_pages = (ushell_blob_len + 0x1FFF) / 0x1000;  /* +8KB for .bss */
+    u32 code_pages = (ushell_blob_len + 0x3FFF) / 0x1000;  /* +16KB for .bss */
     u32 stack_top  = 0x420000;
     u32 stack_base = stack_top - 0x10000;  /* 64KB stack */
     for (u32 i = 0; i < code_pages; i++)
@@ -372,7 +372,9 @@ static void cmd_usersh(void) {
         current_task->state = TASK_RUNNING;
 
     /* Enter ring3 via direct 5-entry iretd */
+    serial_write_str("us: enter_user_mode\n");
     enter_user_mode(0x400000, stack_top, user_pd, 0, nullptr);
+    serial_write_str("us: returned!\n");
 
     /* User task exited (SYS_EXIT restored g_entry_esp).
        Re-enable interrupts. */

@@ -60,7 +60,9 @@ CXXFLAGS = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
            -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
 LDFLAGS = -m elf_i386
 
-.PHONY: all run clean
+.PHONY: all run clean disk-img
+
+DISK_IMG = $(BLDDIR)/disk.img
 
 TEST_ELF_ASM = $(SRCDIR)/user/test_elf.asm
 TEST_ELF_O   = $(BLDDIR)/test_elf.o
@@ -72,7 +74,7 @@ USHELL_ELF   = $(BLDDIR)/ushell.elf
 USHELL_BIN   = $(BLDDIR)/ushell.bin
 USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h
 
-all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN)
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG)
 
 # ... existing targets ...
 
@@ -134,11 +136,20 @@ $(USHELL_BIN): $(USHELL_ELF)
 $(USHELL_HDR): $(USHELL_BIN)
 	python tools/binary_to_header.py $< ushell_blob > $@
 
-run: $(IMG)
-	qemu-system-i386 -fda $< -hda $(BLDDIR)/disk.img -m 32
+# Build FAT12 disk image with CJK font injected at LBA 2048
+DISK_SIZE = 4194304  # 4MB
+$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) tools/mkdisk.py
+	python tools/mkdisk.py
+	@echo "Expanding disk to 4MB and injecting font at LBA 2048..."
+	@python -c "import os; sz=os.path.getsize('$@'); open('$@','ab').write(b'\x00'*($(DISK_SIZE)-sz)); f=open('$(FONT_BIN)','rb').read(); d=open('$@','r+b'); d.seek(2048*512); d.write(f); print(f'Font {len(f)}B injected')"
 
-run-debug: $(IMG)
-	qemu-system-i386 -fda $< -hda $(BLDDIR)/disk.img -monitor stdio -d cpu_reset,int -m 32
+disk-img: $(DISK_IMG)
+
+run: $(IMG) $(DISK_IMG)
+	qemu-system-i386 -fda $< -hda $(DISK_IMG) -m 32
+
+run-debug: $(IMG) $(DISK_IMG)
+	qemu-system-i386 -fda $< -hda $(DISK_IMG) -monitor stdio -d cpu_reset,int -m 32
 
 clean:
 	rm -rf $(BLDDIR)

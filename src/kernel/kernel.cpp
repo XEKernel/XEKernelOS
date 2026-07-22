@@ -93,6 +93,13 @@ extern "C" void kernel_main(void) {
         else           serial_write_str("list test FAIL\n");
     }
 
+    /* Load font BEFORE any screen output — so Chinese text renders correctly */
+    serial_write_str("fat_init calling...\n");
+    int f = fat_init();
+    serial_write_str("fat_init done\n");
+    font_cn_load();
+    serial_write_str(font_cn_loaded ? "font_cn loaded\n" : "font_cn NOT loaded\n");
+
 #if 0
     __asm__ volatile("int3");
     *(volatile int *)0x12345678 = 0x42;
@@ -160,11 +167,6 @@ extern "C" void kernel_main(void) {
     gfx_puts("----------------------------------------\n");
     serial_write_str("=== Shell started ===\n");
 
-    serial_write_str("fat_init calling...\n");
-    int f = fat_init();
-    serial_write_str("fat_init done\n");
-    font_cn_load();
-    serial_write_str(font_cn_loaded ? "font_cn loaded\n" : "font_cn NOT loaded\n");
     if (f == 0) {
         gfx_set_fg(COLOR_LGREEN);
         gfx_puts("[OK] ");

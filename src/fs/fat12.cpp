@@ -440,13 +440,14 @@ int FatFilesystem::cat(const char *name) {
             if (!match) continue;
             u16 cl = *(u16 *)(e + 26);
             u32 size = *(u32 *)(e + 28);
-            u8 dbuf[512];
+            u8 dbuf[513];  // +1 for null terminator
             u32 remain = size;
             while (cl >= 2 && cl < 0xFF0 && remain) {
                 ata_read(data_sec_ + (cl - 2) * spc_, 1, (u16 *)dbuf);
                 u32 chunk = spc_ * bps_;
                 if (chunk > remain) chunk = remain;
-                for (u32 k = 0; k < chunk; k++) gfx_putc(dbuf[k]);
+                dbuf[chunk] = 0;
+                gfx_puts_utf8((const char *)dbuf);
                 remain -= chunk;
                 cl = next_cluster(cl);
             }

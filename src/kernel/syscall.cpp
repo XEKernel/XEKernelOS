@@ -169,7 +169,7 @@ static void sys_gfx_putc(registers_t *r) {
 }
 
 static void sys_gfx_puts(registers_t *r) {
-    gfx.puts((const char *)r->ebx);
+    gfx.puts_utf8((const char *)r->ebx);
     r->eax = 0;
 }
 

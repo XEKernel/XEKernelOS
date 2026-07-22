@@ -25,6 +25,14 @@ private:
     int  caps_  = 0;
     int  ctrl_  = 0;
 
+    /* Ring buffer for scancodes stolen by ctrl_c (PIT handler) */
+    static constexpr int KB_BUF_SIZE = 32;
+    u8   kb_buf_[KB_BUF_SIZE];
+    int  kb_head_ = 0;
+    int  kb_tail_ = 0;
+    void kb_put(u8 sc);
+    u8   kb_get();
+
     void cmd(u8 cmd);
     u8   await();
     u8   read_scan();

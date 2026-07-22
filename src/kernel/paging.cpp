@@ -73,7 +73,7 @@ void PagingManager::load() {
 void PagingManager::map_kernel_4mb(u32 phys_addr) {
     u32 pde_idx = phys_addr >> 22;
     page_dir_virt_[pde_idx] = (phys_addr & 0xFFC00000)
-        | PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_PSE;
+        | PAGE_PRESENT | PAGE_RW | PAGE_PSE;  /* no PAGE_USER — kernel-only */
 }
 
 void PagingManager::map_user_4mb(u32 virt_addr, u32 phys_addr) {
@@ -89,10 +89,9 @@ PagingManager *PagingManager::get_kernel_paging() {
 void PagingManager::init_kernel_paging() {
     kernel_paging = new PagingManager();
 
-    /* Identity-map first 16MB + heap region as 4MB PSE pages
-       PDE 0-3:  kernel code/data (0-16MB)
-       PDE 4-7:  heap (0x01000000-0x01FFFFFF from linker.ld) */
-    for (int i = 0; i < 8; i++)
+    /* Identity-map first 64MB as 4MB PSE pages
+       PDE 0-15: kernel code/data/heap (0-64MB) */
+    for (int i = 0; i < 16; i++)
         kernel_paging->map_kernel_4mb(i * 0x400000);
 
     /* Also map framebuffer region (may be above 16MB) */

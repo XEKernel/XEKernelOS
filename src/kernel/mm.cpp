@@ -1,7 +1,7 @@
 #include "kernel/mm.h"
 
 #define PAGE_SIZE   4096
-#define MEM_TOP     0x1000000
+#define MEM_TOP     0x4000000   /* 64 MB */
 
 static u8  *bitmap;
 static u32  total_pages;

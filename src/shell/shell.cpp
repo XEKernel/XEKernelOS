@@ -6,6 +6,7 @@
 #include "drivers/mouse.h"
 #include "kernel/mm.h"
 #include "kernel/user.h"
+#include "kernel/task.h"
 #include "kernel/loader.h"
 #include "fs/fat12.h"
 #include "lib/ports.h"
@@ -335,15 +336,36 @@ static void cmd_shutdown(void) {
 }
 
 static void cmd_usersh(void) {
-    /* Copy embedded user-shell binary to user-space load address, then
-     * enter Ring3.  On exit (SYS_EXIT), shell_loop is resumed. */
+    /* Copy embedded user-shell binary to user-space load address */
     u8 *dst = (u8 *)0x400000;
     for (u32 i = 0; i < ushell_blob_len; i++)
         dst[i] = ushell_blob[i];
 
     gfx_clear(COLOR_BLACK);
+
+    /* Create user page directory and map shell + stack pages as user-accessible.
+       (Kernel PDEs no longer have PAGE_USER after security fix.)
+       Shell at 0x400000, user stack at 0x420000 (both in PDE 1, avoids
+       touching PDE 0 which contains kernel code). */
     PagingManager *user_pd = new PagingManager();
-    enter_user_mode(0x400000, 0, user_pd, 0, nullptr);
+    u32 code_pages = (ushell_blob_len + 0xFFF) / 0x1000;
+    u32 stack_top  = 0x420000;
+    u32 stack_base = stack_top - 0x10000;  /* 64KB stack */
+    for (u32 i = 0; i < code_pages; i++)
+        user_pd->map_page(0x400000 + i * 0x1000,
+                          0x400000 + i * 0x1000, PT_FLAGS);
+    for (u32 va = stack_base; va < stack_top; va += 0x1000)
+        user_pd->map_page(va, va, PT_FLAGS);
+
+    /* Create task_struct so PIT preemption can save/restore context */
+    task_create_user((void *)0x400000, stack_top, user_pd);
+
+    /* Enter ring3 via direct 5-entry iretd (scheduler handles preemption
+       once the task is running; direct iretd avoids the ring0→ring3
+       stack frame mismatch in schedule()) */
+    enter_user_mode(0x400000, stack_top, user_pd, 0, nullptr);
+
+    /* User task exited (SYS_EXIT restored g_entry_esp) */
     shell_redraw();
     gfx_putc('\n');
 }

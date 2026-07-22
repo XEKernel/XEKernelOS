@@ -7,6 +7,8 @@
 static u32 next_pid = 1;
 static struct task_struct *main_task;
 
+u32 task_next_pid(void) { return next_pid; }
+
 struct list_head ready_queue;
 struct task_struct *current_task;
 
@@ -20,9 +22,13 @@ void task_init(void) {
     main_task = (task_struct *)kmalloc(sizeof(struct task_struct));
     main_task->pid = 0;
     main_task->state = TASK_RUNNING;
+    main_task->cs  = 0x18;   /* kernel code */
     main_task->kernel_stack = 0;
     main_task->paging = PagingManager::get_kernel_paging();
     main_task->user_stack = 0;
+    main_task->parent = nullptr;
+    main_task->exit_code = 0;
+    list_init(&main_task->children);
     current_task = main_task;
 }
 
@@ -54,6 +60,7 @@ int task_create(void (*entry)(void *), void *arg) {
     t->pid = next_pid++;
     t->ecx = 0; t->edx = 0; t->ebx = 0; t->ebp = 0; t->esi = 0; t->edi = 0;
     t->eip = (u32)task_wrapper;
+    t->cs  = 0x18;    /* kernel code */
     t->esp = (u32)sp;
     t->eflags = 0x202;
     t->state = TASK_READY;
@@ -62,6 +69,9 @@ int task_create(void (*entry)(void *), void *arg) {
     t->arg = arg;
     t->paging = PagingManager::get_kernel_paging();
     t->user_stack = 0;
+    t->parent = nullptr;
+    t->exit_code = 0;
+    list_init(&t->children);
     list_add_tail(&t->list, &ready_queue);
 
     return t->pid;
@@ -108,6 +118,7 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->pid = next_pid++;
     t->ecx = 0; t->edx = 0; t->ebx = 0; t->ebp = 0; t->esi = 0; t->edi = 0;
     t->eip = (u32)entry;
+    t->cs  = 0x2B;    /* user code (ring3) */
     t->esp = (u32)sp;
     t->eflags = 0x202;
     t->state = TASK_READY;
@@ -116,6 +127,10 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->arg = nullptr;
     t->paging = user_pd;
     t->user_stack = user_stack_top;
+    t->parent = current_task;    /* parent is whoever created us */
+    t->exit_code = 0;
+    list_init(&t->children);
+    list_add_tail(&t->sibling, &current_task->children);
     list_add_tail(&t->list, &ready_queue);
 
     current_task = t;
@@ -154,6 +169,15 @@ void task_exit(void) {
     current_task->state = TASK_DEAD;
     list_del(&current_task->list);
 
+    /* Wake up parent if it's waiting (waitpid) */
+    if (current_task->parent) {
+        list_del(&current_task->sibling);
+        if (current_task->parent->state == TASK_BLOCKED) {
+            current_task->parent->state = TASK_READY;
+            list_add_tail(&current_task->parent->list, &ready_queue);
+        }
+    }
+
     /* Free user page directory (not kernel's) */
     if (current_task->paging && current_task->paging != PagingManager::get_kernel_paging()) {
         delete current_task->paging;
@@ -162,9 +186,18 @@ void task_exit(void) {
     kfree((void *)current_task->kernel_stack);
     kfree(current_task);
 
-    /* Switch back to kernel page table */
+    /* Switch back to kernel page table and reschedule */
     PagingManager::get_kernel_paging()->load();
 
+    /* Build a fake interrupt frame on the kernel stack to call schedule */
+    registers_t fake;
+    fake.eflags = 0x202;
+    fake.eip = 0;
+    fake._esp = 0;
+    __asm__ volatile("mov %%esp, %0" : "=m"(fake._esp));
+    schedule(&fake);
+
+    /* Should never reach here — schedule() switches away */
     for (;;) __asm__ volatile("hlt");
 }
 
@@ -175,24 +208,29 @@ void task_yield(void) {
 void schedule(registers_t *r) {
     if (!current_task) return;
 
-    if (current_task->pid != 0) {
-        current_task->ecx = r->ecx;
-        current_task->edx = r->edx;
-        current_task->ebx = r->ebx;
-        current_task->ebp = r->ebp;
-        current_task->esi = r->esi;
-        current_task->edi = r->edi;
-        current_task->eip = r->eip;
-        current_task->esp = r->_esp;
-        current_task->eflags = r->eflags;
-    }
+    /* Save current task context (including pid 0 kernel shell) */
+    current_task->ecx = r->ecx;
+    current_task->edx = r->edx;
+    current_task->ebx = r->ebx;
+    current_task->ebp = r->ebp;
+    current_task->esi = r->esi;
+    current_task->edi = r->edi;
+    current_task->eip = r->eip;
+    current_task->cs  = r->cs;
+    current_task->esp = r->_esp;
+    current_task->eflags = r->eflags;
 
-    if (current_task->state == TASK_RUNNING && current_task->pid != 0) {
+    /* Re-queue running tasks (skip DEAD tasks being cleaned up) */
+    if (current_task->state == TASK_RUNNING) {
         current_task->state = TASK_READY;
         list_add_tail(&current_task->list, &ready_queue);
     }
 
-    if (list_empty(&ready_queue)) return;
+    if (list_empty(&ready_queue)) {
+        /* Nothing to run — this shouldn't happen; return to current */
+        current_task->state = TASK_RUNNING;
+        return;
+    }
 
     struct list_head *next = ready_queue.next;
     struct task_struct *nt = container_of(next, struct task_struct, list);
@@ -206,6 +244,7 @@ void schedule(registers_t *r) {
     r->esi = nt->esi;
     r->edi = nt->edi;
     r->eip = nt->eip;
+    r->cs  = nt->cs;
     r->_esp = nt->esp;
     r->eflags = nt->eflags;
     r->eax = 0;

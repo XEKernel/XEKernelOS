@@ -33,6 +33,9 @@ public:
     /* Identity-map a 4MB region for user space (with PAGE_USER) */
     void map_user_4mb(u32 virt_addr, u32 phys_addr);
 
+    /* Read a raw PDE entry (for fork address-space cloning) */
+    u32 get_pde(u32 idx) const { return page_dir_virt_[idx]; }
+
 private:
     u32  page_dir_phys_;   /* physical address of page directory (4KB aligned) */
     u32 *page_dir_virt_;   /* virtual address (identity-mapped) */

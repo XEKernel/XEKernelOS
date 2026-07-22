@@ -96,6 +96,9 @@ $(BLDDIR)/%.o: $(SRCDIR)/%.cpp | $(BLDDIR)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# shell.o also depends on the embedded user-shell blob
+$(BLDDIR)/shell/shell.o: $(USHELL_HDR)
+
 $(KERNEL_ELF): $(ISR_OBJ) $(CXX_OBJS) $(LINKER_SRC)
 	$(LD) $(LDFLAGS) -T $(LINKER_SRC) $(ISR_OBJ) $(CXX_OBJS) -o $@
 

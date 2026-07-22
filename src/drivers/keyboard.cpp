@@ -31,6 +31,18 @@ u8 Keyboard::await() {
     return 0;
 }
 
+void Keyboard::kb_put(u8 sc) {
+    int next = (kb_head_ + 1) % KB_BUF_SIZE;
+    if (next != kb_tail_) { kb_buf_[kb_head_] = sc; kb_head_ = next; }
+}
+
+u8 Keyboard::kb_get() {
+    while (kb_head_ == kb_tail_) { /* busy-wait */ }
+    u8 sc = kb_buf_[kb_tail_];
+    kb_tail_ = (kb_tail_ + 1) % KB_BUF_SIZE;
+    return sc;
+}
+
 void Keyboard::init() {
     outb(0x64, 0xAE);
     for (int i = 0; i < 10000; i++) if (!(inb(0x64) & 2)) break;
@@ -44,10 +56,14 @@ void Keyboard::init() {
     while (inb(KB_STATUS) & 1) inb(KB_DATA);
     shift_ = 0;
     caps_  = 0;
+    kb_head_ = 0;
+    kb_tail_ = 0;
 }
 
 u8 Keyboard::read_scan() {
     for (;;) {
+        /* Check ring buffer for bytes saved by PIT's ctrl_c */
+        if (kb_head_ != kb_tail_) return kb_get();
         u8 st = inb(KB_STATUS);
         if (st & 1) {
             u8 data = inb(KB_DATA);
@@ -104,5 +120,8 @@ int Keyboard::ctrl_c() {
     if (data == 0x1D)      { ctrl_ = 1; return 0; }
     if (data == 0x9D)      { ctrl_ = 0; return 0; }
     if (data == 0x2E && ctrl_) return 1;
+
+    /* Not a Ctrl key — save the stolen byte in ring buffer */
+    kb_put(data);
     return 0;
 }

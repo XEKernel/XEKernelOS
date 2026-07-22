@@ -20,6 +20,16 @@ extern "C" {
 #define SYS_GFX_PUTC  14
 #define SYS_GFX_PUTS  15
 #define SYS_GFX_SET_FG 16
+#define SYS_FAT_DIR    17
+#define SYS_FAT_CD     18
+#define SYS_FAT_MKDIR  19
+#define SYS_FAT_RMDIR  20
+#define SYS_FAT_DELETE 21
+#define SYS_FAT_RENAME 22
+#define SYS_FAT_WRITE  23
+#define SYS_FORK       24
+#define SYS_EXEC       25
+#define SYS_WAITPID    26
 
 static inline int syscall4(int num, int a1, int a2, int a3) {
     int ret;
@@ -39,9 +49,31 @@ static inline void gfx_cls(int color)      { syscall1(SYS_CLS, color); }
 /* ---- input ---- */
 static inline int  kb_read(char *buf, int max) { return syscall4(SYS_READ, (int)buf, max, 0); }
 
+/* ---- FAT filesystem wrappers ---- */
+static inline int  fat_dir(void)                           { return syscall0(SYS_FAT_DIR); }
+static inline int  fat_cd(const char *name)                { return syscall1(SYS_FAT_CD, (int)name); }
+static inline int  fat_mkdir(const char *name)             { return syscall1(SYS_FAT_MKDIR, (int)name); }
+static inline int  fat_rmdir(const char *name)             { return syscall1(SYS_FAT_RMDIR, (int)name); }
+static inline int  fat_delete(const char *name)            { return syscall1(SYS_FAT_DELETE, (int)name); }
+static inline int  fat_rename(const char *old, const char *nw) { return syscall4(SYS_FAT_RENAME, (int)old, (int)nw, 0); }
+static inline int  fat_write(const char *name, const char *data, int size) { return syscall4(SYS_FAT_WRITE, (int)name, (int)data, size); }
+static inline int  fat_cwd(char *buf, int max)             { return syscall4(SYS_GETCWD, (int)buf, max, 0); }
+
+/* Read file into user buffer (one-shot: open → read → close) */
+static inline int fat_read(const char *name, char *buf, int max) {
+    int fd = syscall1(SYS_OPEN, (int)name);
+    if (fd < 0) return -1;
+    int len = syscall4(SYS_FREAD, fd, (int)buf, max);
+    syscall1(SYS_CLOSE, fd);
+    return len;
+}
+
 /* ---- misc ---- */
 static inline void proc_exit(void)              { syscall0(SYS_EXIT); }
-static inline int  gfx_getfb(unsigned int *buf) { return syscall1(SYS_GETFB, (int)buf); }
+static inline int  sys_fork(void)               { return syscall0(SYS_FORK); }
+static inline int  sys_exec(const char *path)    { return syscall1(SYS_EXEC, (int)path); }
+static inline int  sys_waitpid(void)             { return syscall0(SYS_WAITPID); }
+static inline void sys_time(char *buf)          { syscall1(SYS_TIME, (int)buf); }
 
 #ifdef __cplusplus
 }

@@ -18,6 +18,11 @@ entry:
     mov ss, ax
     mov sp, 0xFFFE
 
+    ; Enable A20 gate for memory above 1MB
+    in al, 0x92
+    or al, 2
+    out 0x92, al
+
     ; ---- Load kernel via extended INT 13h ----
     movzx ecx, word [cs:0x1FFE]  ; kernel sectors (written by build_img.py)
     test cx, cx

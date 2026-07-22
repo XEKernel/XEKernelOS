@@ -2,6 +2,7 @@
 
 import struct
 import os
+import datetime
 
 SECTOR_SIZE = 512
 DISK_SIZE = 1474560  # 1.44 MB
@@ -74,6 +75,15 @@ def name_to_83(name_str):
 
 def build_disk(output_path):
     img = bytearray(DISK_SIZE)
+    now = datetime.datetime.now()
+
+    def make_fat_time():
+        """Encode current time as FAT12 time (hh:mm:ss/2)."""
+        return (now.hour << 11) | (now.minute << 5) | (now.second // 2)
+
+    def make_fat_date():
+        """Encode current date as FAT12 date (y-1980:mon:day)."""
+        return ((now.year - 1980) << 9) | (now.month << 5) | now.day
 
     # ---- BPB ----
     img[0:3] = b'\xEB\x3C\x90'
@@ -152,6 +162,8 @@ def build_disk(output_path):
         entry = bytearray(32)
         entry[0:11] = name_bytes
         entry[11] = 0x20  # archive attribute
+        struct.pack_into('<H', entry, 22, make_fat_time())  # time
+        struct.pack_into('<H', entry, 24, make_fat_date())  # date
         struct.pack_into('<H', entry, 26, start_cluster)
         struct.pack_into('<I', entry, 28, size)
         root_dir[entry_offset: entry_offset + 32] = entry

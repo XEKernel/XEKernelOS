@@ -76,8 +76,6 @@ static void sys_fwrite(registers_t *r) {
     }
 
     if (typ == 4) {  /* framebuffer stdout (准则一) */
-        /* Use puts_utf8 to handle multi-byte UTF-8 sequences.
-           The string from user space may contain CJK characters. */
         gfx.puts_utf8(str);
         r->eax = len;
         return;
@@ -936,11 +934,11 @@ extern "C" void syscall_handler(registers_t *r) {
         {
             static u8 kbuf[512] __attribute__((aligned(4)));
             int res = ata_read((u32)r->ebx, 1, (u16 *)kbuf);
-            if (res == 0) {
-                u8 *ubuf = (u8 *)r->ecx;
-                for (int i = 0; i < 512; i++) ubuf[i] = kbuf[i];
-                __asm__ volatile("invlpg %0" : : "m"(ubuf[0]));
-            }
+        if (res == 0) {
+            u8 *ubuf = (u8 *)r->ecx;
+            for (int i = 0; i < 512; i++) ubuf[i] = kbuf[i];
+            __asm__ volatile("wbinvd" ::: "memory");
+        }
             r->eax = (u32)res;
         }
         break;

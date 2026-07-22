@@ -215,33 +215,79 @@ static void ls_print_entry(const u8 *e) {
 }
 
 int ufs_ls() {
-    u8 sec[512];
+    static u8 sec[512] __attribute__((section(".data")));
+    /* MUST be on stack, not .data — kernel reads via PSE alias stale cache */
+    char names[16][13];
+    u32 sizes[16];
+    u8  attrs[16];
+    u16 times[16];
+    u16 dates[16];
+    int count = 0;
 
     if (cur_dir_cluster == 0) {
-        /* Root directory: fixed region */
         int root_sectors = (bpb.root_ents * 32) / bpb.bps;
         for (int s = 0; s < root_sectors; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
-                if (sec[i] == 0) return 0;
-                if (sec[i] == 0xE5) continue;
-                ls_print_entry(&sec[i]);
+                volatile u8 b = sec[i];
+                if (b == 0) goto done_scan;
+                if (b == 0xE5) continue;
+                name83_to_str(&sec[i], names[count]);
+                sizes[count] = sec[i+28] | (sec[i+29]<<8) | (sec[i+30]<<16) | (sec[i+31]<<24);
+                attrs[count] = sec[i+11];
+                times[count] = sec[i+22] | (sec[i+23]<<8);
+                dates[count] = sec[i+24] | (sec[i+25]<<8);
+                count++;
             }
-        }
-    } else {
-        /* Subdirectory: walk cluster chain */
-        u16 cl = cur_dir_cluster;
-        while (cl > 0 && cl < 0xFF8) {
-            /* First sector of cluster */
-            read_cluster_sector(cl, 0, sec);
-            for (int i = 0; i < 512; i += 32) {
-                if (sec[i] == 0) return 0;
-                if (sec[i] == 0xE5) continue;
-                ls_print_entry(&sec[i]);
-            }
-            cl = read_fat(cl);
         }
     }
+done_scan:
+    for (int j = 0; j < count; j++) {
+        /* Type */
+        gfx_set_fg((attrs[j] & 0x10) ? COLOR_LCYAN : COLOR_LGRAY);
+        const char *typ = (attrs[j] & 0x10) ? "DIR  " : "     ";
+        for (int k = 0; typ[k]; k++) gfx_putc(typ[k]);
+
+        /* Size (right-aligned 9 chars) */
+        char sbuf[10];
+        for (int x = 0; x < 9; x++) sbuf[x] = ' ';
+        u32 t = sizes[j]; int p = 8;
+        if (!t) sbuf[8] = '0';
+        else while (t && p >= 0) { sbuf[p--] = '0' + (t%10); t/=10; }
+        sbuf[9] = 0;
+        gfx_set_fg(COLOR_DGRAY);
+        for (int k = 0; sbuf[k]; k++) gfx_putc(sbuf[k]);
+
+        /* Timestamp */
+        u16 ft = times[j], fd = dates[j];
+        if (ft || fd) {
+            int h = (ft>>11)&0x1F, m = (ft>>5)&0x3F;
+            int y = 1980+((fd>>9)&0x7F), mo = (fd>>5)&0xF, d = fd&0x1F;
+            char ts[18];
+            ts[0]=' '; ts[1]='0'+(y/1000); ts[2]='0'+((y/100)%10);
+            ts[3]='0'+((y/10)%10); ts[4]='0'+(y%10);
+            ts[5]='-'; ts[6]='0'+(mo/10); ts[7]='0'+(mo%10);
+            ts[8]='-'; ts[9]='0'+(d/10); ts[10]='0'+(d%10);
+            ts[11]=' '; ts[12]='0'+(h/10); ts[13]='0'+(h%10);
+            ts[14]=':'; ts[15]='0'+(m/10); ts[16]='0'+(m%10);
+            ts[17]=0;
+            gfx_set_fg(COLOR_YELLOW);
+            gfx_putc('!'); /* debug: verify set_fg works */
+            /* Output via putc (reliable cross-cache) */
+            for (int k = 0; ts[k]; k++) gfx_putc(ts[k]);
+        } else {
+            gfx_set_fg(COLOR_DGRAY);
+            for (int k = 0; k < 17; k++) gfx_putc(' ');
+        }
+
+        /* Name */
+        gfx_set_fg(COLOR_WHITE);
+        gfx_putc(' ');
+        for (int k = 0; names[j][k]; k++) gfx_putc(names[j][k]);
+        gfx_putc('\n');
+    }
+    gfx_set_fg(COLOR_LGRAY);
     return 0;
 }
 
@@ -296,6 +342,7 @@ int ufs_cd(const char *name) {
         int root_sectors = (bpb.root_ents * 32) / bpb.bps;
         for (int s = 0; s < root_sectors; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0) return -1;
                 if (sec[i] == 0xE5) continue;
@@ -370,6 +417,7 @@ int ufs_read_file(const char *name, char *buf, int max) {
         int root_sectors = (bpb.root_ents * 32) / bpb.bps;
         for (int s = 0; s < root_sectors && !found_cl; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0) break;
                 if (sec[i] == 0xE5) continue;
@@ -443,6 +491,7 @@ int ufs_size(const char *name) {
         int root_sectors = (bpb.root_ents * 32) / bpb.bps;
         for (int s = 0; s < root_sectors; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0) return -1;
                 if (sec[i] == 0xE5) continue;
@@ -548,6 +597,7 @@ static int dir_find_free_slot() {
     if (cur_dir_cluster == 0) {
         for (int s = 0; s < root_sectors; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0 || sec[i] == 0xE5)
                     return s * 512 + i;
@@ -647,6 +697,7 @@ int ufs_rm(const char *name) {
         int root_sectors = (bpb.root_ents * 32) / bpb.bps;
         for (int s = 0; s < root_sectors; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0) return -1;
                 if (sec[i] == 0xE5) continue;
@@ -753,6 +804,7 @@ int ufs_rmdir(const char *name) {
         int root_sectors = (bpb.root_ents * 32) / bpb.bps;
         for (int s = 0; s < root_sectors; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0) return -1;
                 if (sec[i] == 0xE5) continue;
@@ -828,6 +880,7 @@ int ufs_mv(const char *old_name, const char *new_name) {
         int root_sectors = (bpb.root_ents * 32) / bpb.bps;
         for (int s = 0; s < root_sectors; s++) {
             disk_read(root_sec + s, sec);
+            __asm__ volatile("" ::: "memory");
             for (int i = 0; i < 512; i += 32) {
                 if (sec[i] == 0) return -1;
                 if (sec[i] == 0xE5) continue;

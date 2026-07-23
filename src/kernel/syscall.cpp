@@ -9,7 +9,9 @@
 #include "drivers/mouse.h"
 #include "drivers/pit.h"
 #include "drivers/ata.h"
+#include "drivers/bcache.h"
 #include "fs/fat12.h"
+#include "fs/vfs.h"
 #include "fs/ramdisk.h"
 #include "lib/heap.h"
 #include "lib/ports.h"
@@ -64,7 +66,10 @@ static void sys_fwrite(registers_t *r) {
         return;
     }
 
-    if (typ == 1) {  /* file: append */
+    if (typ == 1) {  /* file: append — check CAP_FILE_WRITE */
+        if (current_task && !(current_task->caps & CAP_FILE_WRITE)) {
+            r->eax = (u32)-1; return;
+        }
         u32 space = current_task->fd_size[fd] - current_task->fd_pos[fd];
         if (len > space) len = space;
         if (len == 0) { r->eax = 0; return; }
@@ -77,6 +82,11 @@ static void sys_fwrite(registers_t *r) {
 
     if (typ == 4) {  /* framebuffer stdout (准则一) */
         gfx.puts_utf8(str);
+        r->eax = len;
+        return;
+    }
+
+    if (typ == 5 || typ == 6) {  /* null/zero: discard writes */
         r->eax = len;
         return;
     }
@@ -112,10 +122,38 @@ static void sys_open(registers_t *r) {
     }
     if (fd < 0) { r->eax = (u32)-1; return; }
 
+    /* Device nodes (准则一: everything is an fd) */
+    auto str_eq = [](const char *a, const char *b) -> bool {
+        while (*a && *b && *a == *b) { a++; b++; }
+        return *a == *b;
+    };
+
+    if (str_eq(name, "/dev/null")) {
+        current_task->fd_buf[fd] = (u8 *)1;
+        current_task->fd_type[fd] = 5;  /* null device */
+        current_task->fd_size[fd] = 0;
+        current_task->fd_pos[fd] = 0;
+        r->eax = fd;
+        return;
+    }
+    if (str_eq(name, "/dev/zero")) {
+        current_task->fd_buf[fd] = (u8 *)1;
+        current_task->fd_type[fd] = 6;  /* zero device */
+        current_task->fd_size[fd] = ~0u;
+        current_task->fd_pos[fd] = 0;
+        r->eax = fd;
+        return;
+    }
+
+    /* 准则四: file read requires CAP_FILE_READ */
+    if (current_task && !(current_task->caps & CAP_FILE_READ)) {
+        r->eax = (u32)-1; return;
+    }
+
     u8 *fb = (u8 *)kmalloc(65536);
     if (!fb) { r->eax = (u32)-1; return; }
 
-    int sz = fat_read_file_buf(name, fb, 65536);
+    int sz = vfs_open(name, fb, 65536);
     if (sz <= 0) { kfree(fb); r->eax = (u32)-1; return; }
 
     current_task->fd_buf[fd] = fb;
@@ -131,6 +169,16 @@ static void sys_fread(registers_t *r) {
     u32 len = r->edx;
 
     if (fd >= MAX_FD || !current_task->fd_buf[fd] || !buf) { r->eax = (u32)-1; return; }
+
+    /* Device fds */
+    if (current_task->fd_type[fd] == 5) {  /* /dev/null: always EOF */
+        r->eax = 0; return;
+    }
+    if (current_task->fd_type[fd] == 6) {  /* /dev/zero: fill with zeros */
+        if (len > 4096) len = 4096;
+        for (u32 i = 0; i < len; i++) buf[i] = 0;
+        r->eax = len; return;
+    }
 
     /* 准则一: unified FD read — handles files AND pipes */
     if (current_task->fd_type[fd] == 2) {  /* pipe read-end */
@@ -151,6 +199,8 @@ static void sys_fread(registers_t *r) {
     }
 
     /* File read */
+    if (current_task && current_task->fd_type[fd] == 1 &&
+        !(current_task->caps & CAP_FILE_READ)) { r->eax = (u32)-1; return; }
     u32 remain = current_task->fd_size[fd] - current_task->fd_pos[fd];
     if (len > remain) len = remain;
     if (len > 4096) len = 4096;
@@ -216,26 +266,26 @@ static void sys_fat_cd(registers_t *r) {
 static void sys_fat_mkdir(registers_t *r) {
     const char *name = (const char *)r->ebx;
     if (!name) { r->eax = (u32)-1; return; }
-    r->eax = fat.mkdir(name);
+    r->eax = vfs_mkdir(name);
 }
 
 static void sys_fat_rmdir(registers_t *r) {
     const char *name = (const char *)r->ebx;
     if (!name) { r->eax = (u32)-1; return; }
-    r->eax = fat.rmdir(name);
+    r->eax = vfs_rmdir(name);
 }
 
 static void sys_fat_delete(registers_t *r) {
     const char *name = (const char *)r->ebx;
     if (!name) { r->eax = (u32)-1; return; }
-    r->eax = fat.delete_file(name);
+    r->eax = vfs_remove(name);
 }
 
 static void sys_fat_rename(registers_t *r) {
     const char *old_name = (const char *)r->ebx;
     const char *new_name = (const char *)r->ecx;
     if (!old_name || !new_name) { r->eax = (u32)-1; return; }
-    r->eax = fat.rename(old_name, new_name);
+    r->eax = vfs_rename(old_name, new_name);
 }
 
 static void sys_fat_write(registers_t *r) {
@@ -243,7 +293,7 @@ static void sys_fat_write(registers_t *r) {
     const u8 *data = (const u8 *)r->ecx;
     u32 size = r->edx;
     if (!name || !data || size > 4096) { r->eax = (u32)-1; return; }
-    r->eax = fat.write_file(name, data, size);
+    r->eax = vfs_write(name, data, size);
 }
 
 /* ---- fork: clone current task with copied address space ---- */
@@ -325,7 +375,7 @@ static void sys_exec(registers_t *r) {
     /* Read binary from disk */
     u8 *elf_buf = (u8 *)kmalloc(65536);
     if (!elf_buf) { r->eax = (u32)-1; return; }
-    int sz = fat.read_file(path, elf_buf, 65536);
+    int sz = vfs_open(path, elf_buf, 65536);
     if (sz <= 0) { kfree(elf_buf); r->eax = (u32)-1; return; }
 
     /* Replace current task's address space */
@@ -524,7 +574,9 @@ static void sys_close(registers_t *r) {
         pipe->broken = true;  /* one end closed → pipe broken */
         if (pipe->refs <= 0)
             kfree(pipe);
-    } else if (current_task->fd_type[fd] != 4) {  /* skip sentinel fds (fb) */
+    } else if (current_task->fd_type[fd] != 4 &&
+               current_task->fd_type[fd] != 5 &&
+               current_task->fd_type[fd] != 6) {
         kfree(current_task->fd_buf[fd]);
     }
 
@@ -554,8 +606,12 @@ static void sys_stat(registers_t *r) {
     const char *path = (const char *)r->ebx;
     u32 *buf = (u32 *)r->ecx; /* {size, flags(0=file,1=dir), 0, 0} */
     if (!path || !buf) { r->eax = (u32)-1; return; }
+    /* 准则四: stat reads file metadata from disk */
+    if (current_task && !(current_task->caps & CAP_FILE_READ)) {
+        r->eax = (u32)-1; return;
+    }
     int sz, is_dir;
-    sz = fat.stat(path, &is_dir);
+    sz = vfs_stat(path, &is_dir);
     if (sz < 0) { r->eax = (u32)-1; return; }
     buf[0] = (u32)sz;
     buf[1] = is_dir ? 1u : 0u;
@@ -746,8 +802,12 @@ static void sys_fsync(registers_t *r) {
     if (fd >= MAX_FD || !current_task->fd_buf[fd] || !name || current_task->fd_type[fd] != 1) {
         r->eax = (u32)-1; return;
     }
+    /* 准则四: syncing file to disk requires CAP_FILE_WRITE */
+    if (current_task && !(current_task->caps & CAP_FILE_WRITE)) {
+        r->eax = (u32)-1; return;
+    }
     /* Write FD buffer to disk file */
-    int result = fat_write_file(name, current_task->fd_buf[fd], (int)current_task->fd_pos[fd]);
+    int result = vfs_write(name, current_task->fd_buf[fd], (int)current_task->fd_pos[fd]);
     r->eax = (u32)result;
 }
 
@@ -925,9 +985,8 @@ extern "C" void syscall_handler(registers_t *r) {
         r->eax = (u32)(current_task ? task_drop_cap((u32)r->ebx) : -1);
         break;
     case SYS_DISK_READ:
-        /* 准则五: raw sector read — copy through kernel buffer
-           because ata_read needs kernel-addressable memory (PSE identity-mapped),
-           not user virtual addresses. */
+        /* 准则五: raw sector read — direct ATA PIO to avoid
+           bcache interference with user-space FS operations */
         if (current_task && !(current_task->caps & CAP_DISK_READ)) {
             r->eax = (u32)-1; break;
         }

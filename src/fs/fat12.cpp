@@ -153,7 +153,7 @@ void FatFilesystem::set_cluster(u16 cluster, u16 value) {
     write_fat_entry(cluster, value);
 }
 
-int FatFilesystem::read_file(const char *name, u8 *out, u32 max_len) {
+int FatFilesystem::open(const char *name, u8 *out, u32 max_len) {
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -188,7 +188,7 @@ int FatFilesystem::read_file(const char *name, u8 *out, u32 max_len) {
     return -1;
 }
 
-int FatFilesystem::write_file(const char *name, const u8 *data, u32 size) {
+int FatFilesystem::write(const char *name, const u8 *data, u32 size) {
     u8 fname[11];
     str_to_name83(name, fname);
 
@@ -255,7 +255,7 @@ int FatFilesystem::write_file(const char *name, const u8 *data, u32 size) {
     return 0;
 }
 
-int FatFilesystem::delete_file(const char *name) {
+int FatFilesystem::remove(const char *name) {
     u8 fname[11];
     str_to_name83(name, fname);
 

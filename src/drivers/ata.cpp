@@ -81,3 +81,7 @@ int AtaController::write(u32 lba, u8 count, const u16 *buf) {
     }
     return 0;
 }
+
+/* C-linkage wrappers for Rust FFI */
+extern "C" int ata_read_c(u32 lba, u8 count, u16 *buf)  { return ata.read(lba, count, buf); }
+extern "C" int ata_write_c(u32 lba, u8 count, const u16 *buf) { return ata.write(lba, count, buf); }

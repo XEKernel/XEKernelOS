@@ -150,7 +150,6 @@ static void cmd_tmp(const char *a) {
     }
 }
 
-/* RUN <file> — uses exec_fd(): open in user space, pass fd to kernel */
 static void cmd_run(const char *a) {
     while(*a==' ')a++; if(!*a)return;
     int fd = _OPEN(a);

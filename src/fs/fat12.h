@@ -1,23 +1,24 @@
 #pragma once
 #include "lib/types.h"
+#include "fs/vfs.h"
 
 #define FAT12_BASE_LBA 2048
 
-class FatFilesystem {
+class FatFilesystem : public Filesystem {
 public:
     int  init();
     int  dir();
     int  cd(const char *name);
-    int  mkdir(const char *name);
+    int  mkdir(const char *name) override;
     int  cat(const char *name);
     void cwd_str(char *out, int max);
 
-    int  read_file(const char *name, u8 *out, u32 max_len);
-    int  write_file(const char *name, const u8 *data, u32 size);
-    int  delete_file(const char *name);
-    int  rmdir(const char *name);
-    int  rename(const char *old_name, const char *new_name);
-    int  stat(const char *name, int *is_dir);  /* returns size, sets is_dir */
+    int  open(const char *name, u8 *out, u32 max_len) override;
+    int  write(const char *name, const u8 *data, u32 size) override;
+    int  remove(const char *name) override;
+    int  stat(const char *name, int *is_dir) override;
+    int  rmdir(const char *name) override;
+    int  rename(const char *old_name, const char *new_name) override;
     u16  find_free_cluster();
     u16  alloc_cluster();
     void set_cluster(u16 cluster, u16 value);
@@ -52,9 +53,9 @@ inline int  fat_cd(const char *n)     { return fat.cd(n); }
 inline int  fat_mkdir(const char *n)  { return fat.mkdir(n); }
 inline int  fat_cat(const char *n)    { return fat.cat(n); }
 inline void fat_cwd_str(char *o, int m){ fat.cwd_str(o, m); }
-inline int  fat_read_file_buf(const char *n, u8 *o, u32 m) { return fat.read_file(n, o, m); }
-inline int  fat_write_file(const char *n, const u8 *d, u32 s) { return fat.write_file(n, d, s); }
-inline int  fat_delete_file(const char *n) { return fat.delete_file(n); }
+inline int  fat_read_file_buf(const char *n, u8 *o, u32 m) { return fat.open(n, o, m); }
+inline int  fat_write_file(const char *n, const u8 *d, u32 s) { return fat.write(n, d, s); }
+inline int  fat_delete_file(const char *n) { return fat.remove(n); }
 inline int  fat_rmdir(const char *n)  { return fat.rmdir(n); }
 inline int  fat_rename(const char *o, const char *n) { return fat.rename(o, n); }
 inline int  fat_stat(const char *n, int *is_dir)  { return fat.stat(n, is_dir); }

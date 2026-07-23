@@ -28,3 +28,4 @@ extern "C" void __cxa_pure_virtual() {
 
 /* Called before/after static constructors; we have none */
 extern "C" void __cxa_atexit() {}
+extern "C" int  atexit(void (*)(void)) { return 0; }

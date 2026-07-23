@@ -16,6 +16,7 @@
 #include "kernel/user.h"
 #include "kernel/task.h"
 #include "fs/fat12.h"
+#include "fs/vfs.h"
 #include "fs/ramdisk.h"
 #include "drivers/font_cn.h"
 #include "drivers/bcache.h"
@@ -106,6 +107,8 @@ extern "C" void kernel_main(void) {
     serial_write_str("fat_init calling...\n");
     int f = fat_init();
     serial_write_str("fat_init done\n");
+    vfs_init();                /* init VFS mount table */
+    vfs_mount("/", &fat);      /* mount FAT12 at root */
     bc_init();                 /* init block cache after FS is ready */
     rd_init();                 /* init ramdisk */
     font_cn_load();

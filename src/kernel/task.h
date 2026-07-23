@@ -19,8 +19,11 @@ class PagingManager;  /* forward declaration */
 #define CAP_SHUTDOWN     (1 << 3)
 #define CAP_SIGNAL       (1 << 4)   /* send signals to other tasks */
 #define CAP_SYSCALL      (1 << 5)   /* call any syscall */
+#define CAP_FILE_READ    (1 << 6)   /* open/read files via fd */
+#define CAP_FILE_WRITE   (1 << 7)   /* write/sync files via fd */
 #define CAP_ALL          (CAP_DISK_READ | CAP_DISK_WRITE | CAP_SCREEN | \
-                          CAP_SHUTDOWN | CAP_SIGNAL | CAP_SYSCALL)
+                          CAP_SHUTDOWN | CAP_SIGNAL | CAP_SYSCALL | \
+                          CAP_FILE_READ | CAP_FILE_WRITE)
 
 #define MAX_FD 16
 

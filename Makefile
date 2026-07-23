@@ -39,6 +39,7 @@ CXX_SRCS := $(SRCDIR)/kernel/kernel.cpp \
             $(SRCDIR)/drivers/serial.cpp \
             $(SRCDIR)/drivers/font_cn_load.cpp \
             $(SRCDIR)/fs/fat12.cpp \
+            $(SRCDIR)/fs/vfs.cpp \
             $(SRCDIR)/fs/ramdisk.cpp \
             $(SRCDIR)/shell/shell.cpp \
             $(SRCDIR)/lib/heap.cpp \

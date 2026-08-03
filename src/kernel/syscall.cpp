@@ -104,6 +104,12 @@ static void sys_read(registers_t *r) {
     kb_readline(buf, max - 1);
     buf[max - 1] = 0;
     int n = 0; while (buf[n]) n++;
+    /* 调试: 串口回显内核收到的命令行, 区分"输入丢键"与"命令执行失败" */
+    serial_write_str("[READ] \"");
+    serial_write_str_len(buf, n);
+    serial_write_str("\" len=");
+    serial_write_u32((u32)n);
+    serial_write_char('\n');
     __asm__ volatile("wbinvd");
     /* Invalidate TLB for user buffer pages — kernel writes via PSE,
        user reads via 4KB page table. Without invlpg, user may read stale TLB. */

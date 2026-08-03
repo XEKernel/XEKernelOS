@@ -20,6 +20,10 @@ const char Keyboard::kbd_up_[] = {
 
 Keyboard kb;
 
+/* IRQ1 触发计数 — 调试用. 每 64 次触发在串口打印一次, 便于确认
+   中断驱动键盘在真实硬件 / QEMU 窗口模式下正常工作. */
+static volatile u32 g_irq1_count = 0;
+
 /* IRQ1 handler — 中断驱动键盘输入.
    修复: 原实现轮询 inb(0x64), 但 PS/2 控制器只有 16 字节 FIFO,
    快速打字 (或自动化注入) 会溢出丢键. 中断 handler 在字节到达时
@@ -34,7 +38,16 @@ void Keyboard::irq_handler() {
             kb.kb_put(data);         /* keyboard scan code → ring buffer */
         }
     }
+    /* 调试: 每 64 次 IRQ1 打印一次计数 (串口) */
+    if ((++g_irq1_count & 63) == 0) {
+        serial_write_str("[KBD] irq1_count=");
+        serial_write_u32(g_irq1_count);
+        serial_write_char('\n');
+    }
 }
+
+/* 供调试/诊断读取 IRQ1 触发总数 */
+u32 Keyboard::irq_count() { return g_irq1_count; }
 
 void Keyboard::cmd(u8 cmd) {
     for (int i = 0; i < 10000; i++) if (!(inb(0x64) & 2)) break;
@@ -112,6 +125,15 @@ u8 Keyboard::read_scan() {
 
 char Keyboard::getchar() {
     for (;;) {
+        /* 串口输入桥: QEMU 自动化测试注入 / 真实串口控制台.
+           COM1 有字节时直接作为 ASCII 字符返回 (优先级高于 PS/2,
+           便于 -serial tcp/pipe 注入命令; 真实硬件无串口输入时零开销).
+           修复: \r (CR) 统一转 \n, 兼容 tty/网络注入的行结束符. */
+        if (serial_has_data()) {
+            char c = serial_read_char();
+            if (c == '\r') c = '\n';
+            return c;
+        }
         u8 s = read_scan();
         if (s == SC_LSHIFT || s == SC_RSHIFT) { shift_ = 1; continue; }
         if (s == (SC_LSHIFT | 0x80) || s == (SC_RSHIFT | 0x80)) { shift_ = 0; continue; }

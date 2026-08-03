@@ -16,6 +16,8 @@ public:
 
     /* IRQ1 handler — 中断驱动输入 (注册到 isr_register(0x21, ...)) */
     static void irq_handler();
+    /* 调试: IRQ1 触发总数 */
+    static u32 irq_count();
 
 private:
     static const char kbd_low_[];

@@ -5,7 +5,7 @@
 - 退出后解析 disk.img 的 FAT12 结构, 验证簇分配正确性 (回归 BUG#1)
 用法: python tools/qemu_auto.py
 """
-import os, re, subprocess, sys, time, struct
+import os, re, subprocess, sys, time, struct, socket
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
@@ -35,16 +35,30 @@ class Qemu:
             ['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', '-S', '4M',
              disk, self.disk_qcow2],
             check=True, capture_output=True)
-        self.p = subprocess.Popen(
-            [QEMU,
-             '-drive', f'file={self.disk_qcow2},format=qcow2,if=ide,index=1',
-             '-drive', f'file={img},format=raw,if=ide,index=0',
-             '-m', '32', '-boot', 'order=c',
-             '-display', 'none', '-no-reboot',
-             '-serial', 'file:' + self.log_path,
-             '-monitor', 'stdio'],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1)
+        # 串口走 TCP server: 内核"串口输入桥"会把串口字节当作键盘输入,
+        # 绕过 QEMU 11.x sendkey 不触发 PS/2 FIFO 的缺陷, 命令注入完全可靠.
+        # monitor 走 stdio 只做 screendump/quit.
+        self.serial_port = 7777
+        self.sock = None
+        self.serial_buf = ''
+        self.p = None
+        try:
+            self.p = subprocess.Popen(
+                [QEMU,
+                 '-drive', f'file={self.disk_qcow2},format=qcow2,if=ide,index=1',
+                 '-drive', f'file={img},format=raw,if=ide,index=0',
+                 '-m', '32', '-boot', 'order=c',
+                 '-display', 'none', '-no-reboot',
+                 # wait=on: QEMU 等客户端连接串口后才启动 guest, 不丢启动日志
+                 '-serial', f'tcp:127.0.0.1:{self.serial_port},server=on,wait=on',
+                 '-monitor', 'stdio'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+        except Exception:
+            # Popen 失败时确保不残留 QEMU
+            subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
+                           capture_output=True)
+            raise
         self._buf = ''
 
     def _read_until(self, token, timeout=20):
@@ -68,32 +82,45 @@ class Qemu:
         self._buf = ''
         return self._read_until('(qemu) ', timeout)
 
-    def sendkey(self, key):
-        return self.cmd('sendkey ' + key, timeout=5)
+    def connect_serial(self, timeout=30):
+        """连接 QEMU 串口 TCP (命令注入 + 启动日志捕获)"""
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                self.sock = socket.create_connection(('127.0.0.1', self.serial_port), timeout=5)
+                self.sock.setblocking(False)
+                return True
+            except OSError:
+                time.sleep(0.5)
+        return False
+
+    def _drain_serial(self):
+        """非阻塞读取串口输出, 累积到 serial_buf (启动日志/panic 检测)"""
+        if self.sock is None:
+            return
+        try:
+            while True:
+                data = self.sock.recv(4096)
+                if not data:
+                    break
+                self.serial_buf += data.decode('utf-8', 'replace')
+        except BlockingIOError:
+            pass
+        except OSError:
+            pass
 
     def send_text(self, text):
-        # PS/2 控制器缓冲区只有 16 字节; 长字符串必须分批发送且等 shell 处理
-        # 每 5 字符 1 批, 中间 sleep 0.4s 让 read_scan 排空
-        chars = list(text)
-        i = 0
-        while i < len(chars):
-            chunk = chars[i:i+5]
-            i += 5
-            keys = []
-            for ch in chunk:
-                k = KEYMAP.get(ch)
-                if k is None:
-                    if ch.isalpha() or ch.isdigit():
-                        k = ch
-                    else:
-                        print(f'  [skip key {ch!r}]')
-                        continue
-                keys.append(k)
-            if keys:
-                self.cmd('sendkey ' + '-'.join(keys), timeout=15)
-            time.sleep(0.4)
-        self.cmd('sendkey ret', timeout=10)
+        """通过串口 TCP 注入命令行 (不依赖 PS/2 sendkey, 100% 可靠)"""
+        if self.sock is None:
+            if not self.connect_serial():
+                print('  [FAIL] 串口 TCP 连接失败')
+                return
+        try:
+            self.sock.sendall((text + '\r').encode('utf-8'))
+        except OSError as e:
+            print(f'  [FAIL] 串口发送失败: {e}')
         time.sleep(1.5)
+        self._drain_serial()
 
     def screendump(self, name):
         path = os.path.join(BLD, name)
@@ -101,8 +128,21 @@ class Qemu:
         return path
 
     def quit(self):
+        self._drain_serial()
         try:
             self.cmd('quit', timeout=3)
+        except Exception:
+            pass
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+        # 兜底: 确保 QEMU 进程结束, 否则它会持有 stdout 句柄卡住调用者
+        try:
+            if self.p and self.p.poll() is None:
+                self.p.kill()
+                self.p.wait(timeout=5)
         except Exception:
             pass
         self.p.stdin.close()
@@ -166,12 +206,18 @@ def main():
         print('构建产物缺失, 请先 make')
         return 1
 
-    q = Qemu(img, disk)
+    q = None
     try:
+        q = Qemu(img, disk)
         if not q.wait_prompt(timeout=25):
             print('FAIL: QEMU monitor 无响应')
             return 1
+        # 连接串口 TCP — wait=on 模式下连接后 guest 才开始启动
+        if not q.connect_serial(timeout=30):
+            print('FAIL: 串口 TCP 连接失败')
+            return 1
         time.sleep(3)   # 等用户 Shell 启动完成
+        q._drain_serial()
         q.screendump('t00_boot.ppm')
 
         steps = [
@@ -190,10 +236,21 @@ def main():
             time.sleep(2.0)
             q.screendump(f't{tag}.ppm')
     finally:
-        q.quit()
+        if q is not None:
+            q.quit()
+        else:
+            # Qemu 构造失败 — 确保无残留进程 (否则 bash 管道会被 QEMU 占住)
+            subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
+                           capture_output=True)
+        # 无论如何确保 QEMU 退出, 防止其持有 stdout 导致调用者卡住
+        subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
+                       capture_output=True)
 
-    # ---- 验证 1: 启动日志无异常 ----
-    log = open(q.log_path, encoding='utf-8', errors='replace').read()
+    # ---- 验证 1: 启动日志无异常 (串口输出在 TCP 上捕获) ----
+    log = q.serial_buf
+    # 兼容: 若无串口缓冲, 回退读文件
+    if not log and os.path.exists(q.log_path):
+        log = open(q.log_path, encoding='utf-8', errors='replace').read()
     for bad in ['PANIC', 'Page Fault', 'kernel_panic', 'double', 'Triple']:
         if bad in log:
             print(f'FAIL: 串口日志出现 {bad}')

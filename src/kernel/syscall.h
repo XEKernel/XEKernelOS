@@ -1,0 +1,71 @@
+#pragma once
+#include "kernel/isr.h"
+
+#define SYS_WRITE 1
+#define SYS_EXIT  2
+#define SYS_READ  3
+#define SYS_OPEN  4
+#define SYS_FREAD 5
+#define SYS_SBRK  6
+#define SYS_GETCWD 7
+#define SYS_TIME   8
+#define SYS_GETFB  9
+#define SYS_CLOSE  10
+#define SYS_MOUSE  11
+#define SYS_SLEEP  12
+#define SYS_CLS    13
+#define SYS_GFX_PUTC  14
+#define SYS_GFX_PUTS  15
+#define SYS_GFX_SET_FG 16
+#define SYS_FAT_DIR    17
+#define SYS_FAT_CD     18
+#define SYS_FAT_MKDIR  19
+#define SYS_FAT_RMDIR  20
+#define SYS_FAT_DELETE 21
+#define SYS_FAT_RENAME 22
+#define SYS_FAT_WRITE  23
+#define SYS_FORK       24
+#define SYS_EXEC       25
+#define SYS_WAITPID    26
+#define SYS_GETPID     27
+#define SYS_KILL       28
+#define SYS_SIGACTION  29
+#define SYS_SIGRETURN  30
+#define SYS_STAT       31
+#define SYS_LSEEK      32
+#define SYS_DUP        33
+#define SYS_DUP2       34
+#define SYS_PIPE       35
+#define SYS_FWRITE     36
+#define SYS_SET_OUTFD  37
+#define SYS_FSYNC      38
+#define SYS_RD_CREATE  39
+#define SYS_RD_READ    40
+#define SYS_RD_LIST    41
+#define SYS_RD_REMOVE  42
+#define SYS_DROP_CAP   43
+#define SYS_DISK_READ  44
+#define SYS_DISK_WRITE 45
+#define SYS_IOCTL      46
+#define SYS_EXEC_FD    47
+#define SYS_VFS_DIR    48   /* VFS directory listing: ebx=path */
+#define SYS_MEMINFO    49   /* memory info: eax=free_pages ebx=total_pages */
+
+/* ioctl commands for fd type 4 (framebuffer) */
+#define IOCTL_GFX_SET_FG  1
+#define IOCTL_GFX_CLS     2
+#define IOCTL_GFX_FILL    3   /* fill_rect: edx→{i16 x,y,w,h; u8 color} */
+#define IOCTL_GFX_LINE    4   /* draw_line: edx→{i16 x1,y1,x2,y2; u8 color} */
+#define IOCTL_GFX_RECT    5   /* draw_rect: edx→{i16 x,y,w,h; u8 color} */
+#define IOCTL_GFX_PIXEL   6   /* set_pixel: edx→{i16 x,y; u8 color} */
+#define IOCTL_GFX_TEXT    7   /* puts_at: edx→{i16 x,y; u8 color; char text[]} */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void syscall_handler(registers_t *r);
+
+#ifdef __cplusplus
+}
+#endif

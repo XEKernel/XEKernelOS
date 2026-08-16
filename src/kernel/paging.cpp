@@ -1,6 +1,7 @@
 #include "kernel/paging.h"
 #include "kernel/mm.h"
 #include "lib/types.h"
+#include "drivers/serial.h"
 
 static PagingManager *kernel_paging = nullptr;
 
@@ -27,6 +28,11 @@ PagingManager::PagingManager() {
 }
 
 PagingManager::~PagingManager() {
+    /* 释放登记的 owned 数据页 (sbrk/fork 拷贝页) */
+    for (int i = 0; i < owned_count_; i++)
+        mm_free_page(owned_phys_[i]);
+    owned_count_ = 0;
+
     /* Free user page tables (PDE indices 0..767 for < 0xC0000000) */
     for (int i = 0; i < 768; i++) {
         u32 pde = page_dir_virt_[i];
@@ -39,6 +45,31 @@ PagingManager::~PagingManager() {
     mm_free_page(page_dir_phys_);
 }
 
+u32 PagingManager::translate_user(u32 va) const {
+    u32 pde = page_dir_virt_[va >> 22];
+    if (!(pde & PAGE_PRESENT)) return 0;
+
+    if (pde & PAGE_PSE) {
+        /* 4MB 大页 — 必须带 USER 位, 否则是内核 PSE 恒等映射,
+           拒绝用户指针指向内核区 */
+        if (!(pde & PAGE_USER)) return 0;
+        return (pde & 0xFFC00000) + (va & 0x3FFFFF);
+    }
+
+    u32 *pt = (u32 *)(pde & 0xFFFFF000);
+    u32 pte = pt[(va >> 12) & 0x3FF];
+    if (!(pte & PAGE_PRESENT)) return 0;
+    if (!(pte & PAGE_USER))    return 0;
+    return (pte & 0xFFFFF000) + (va & 0xFFF);
+}
+
+void PagingManager::track_owned(u32 phys) {
+    /* 溢出时放弃跟踪 (页泄漏但不崩溃) — MAX_OWNED=512 远超
+       当前 fork 拷贝(32页)+sbrk 的实际用量 */
+    if (owned_count_ < MAX_OWNED)
+        owned_phys_[owned_count_++] = phys;
+}
+
 void PagingManager::map_page(u32 virt, u32 phys, u32 flags) {
     u32 pde_idx = virt >> 22;
     u32 pte_idx = (virt >> 12) & 0x3FF;
@@ -48,6 +79,7 @@ void PagingManager::map_page(u32 virt, u32 phys, u32 flags) {
     /* If PDE is not present or is a 4MB PSE page, allocate a page table */
     if (!(pde & PAGE_PRESENT) || (pde & PAGE_PSE)) {
         u32 pt_phys = mm_alloc_page();
+        if (!pt_phys) return;  /* OOM: 保持 PDE 缺失, 后续访问触发可处理的 #PF */
         u32 *pt_virt = (u32 *)pt_phys;
 
         /* Zero the page table */
@@ -105,8 +137,17 @@ void PagingManager::init_kernel_paging() {
     cr4 |= 0x10;
     __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
 
-    /* DO NOT load kernel_paging now — GRUB's PD covers all memory.
-       kernel_paging->load() is called from ISR when entering kernel mode. */
+    /* 开启分页 (CR0.PG)! stage2 只设了 PE (or al,1), PG 从未开启 —
+       PG=0 时 mov cr3 全被硬件忽略, 整个系统实际跑在纯段式恒等模式:
+       用户页表/fork 深拷贝/exec 私有页从未生效, 仅靠"所有关键区域
+       恰好恒等"侥幸工作 (实测: exec 换非恒等私有页后 ring3 仍执行
+       旧恒等镜像, CR0=0x11 PG=0 铁证)。
+       此刻 CPU 在低地址执行, 0-64MB PSE 恒等覆盖切换点 — 安全。 */
+    kernel_paging->load();
+    u32 cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= 0x80000000;   /* PG */
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
 }
 
 void paging_init() {

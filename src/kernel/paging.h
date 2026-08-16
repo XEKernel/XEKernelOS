@@ -36,9 +36,27 @@ public:
     /* Read a raw PDE entry (for fork address-space cloning) */
     u32 get_pde(u32 idx) const { return page_dir_virt_[idx]; }
 
+    /* Write a raw PDE entry (for cloning 4MB user PSE mappings in fork) */
+    void set_pde(u32 idx, u32 val) { page_dir_virt_[idx] = val; }
+
+    /* 用户虚拟地址 → 物理地址 (要求 USER 权限页)。
+       返回 0 表示未映射或非用户页 — syscall 用户指针访问/信号
+       handler 校验统一走这里, 不再依赖恒等映射假设。 */
+    u32 translate_user(u32 va) const;
+
+    /* 登记本页目录"拥有"的物理数据页 (sbrk/fork 拷贝页)。
+       析构时统一释放 — 修复用户数据页永不回收的慢泄漏。
+       恒等映射页 (exec/loader 的 0x400000~0x430000) 由 mm
+       统一预留, 不在此登记。 */
+    void track_owned(u32 phys);
+
 private:
     u32  page_dir_phys_;   /* physical address of page directory (4KB aligned) */
     u32 *page_dir_virt_;   /* virtual address (identity-mapped) */
+
+    static constexpr int MAX_OWNED = 512;
+    u32  owned_phys_[MAX_OWNED];
+    int  owned_count_ = 0;
 };
 
 void paging_init();

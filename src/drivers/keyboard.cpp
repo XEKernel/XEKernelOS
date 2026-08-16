@@ -2,6 +2,7 @@
 #include "drivers/gfx.h"
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
+#include "drivers/input.h"
 #include "kernel/isr.h"
 
 const char Keyboard::kbd_low_[] = {
@@ -64,7 +65,13 @@ u8 Keyboard::await() {
 
 void Keyboard::kb_put(u8 sc) {
     int next = (kb_head_ + 1) % KB_BUF_SIZE;
-    if (next != kb_tail_) { kb_buf_[kb_head_] = sc; kb_head_ = next; }
+    if (next != kb_tail_) {
+        kb_buf_[kb_head_] = sc;
+        kb_head_ = next;
+        /* 同步压入统一输入事件流 (GUI /dev/input 消费;
+           shell 的 kb_readline 仍走原 ring, 互不干扰) */
+        input_push(3, 0, 0, sc);
+    }
 }
 
 u8 Keyboard::kb_get() {
@@ -100,18 +107,25 @@ void Keyboard::init() {
     isr_register(0x21, &Keyboard::irq_handler);
 }
 
+void Keyboard::drain() {
+    /* drain PS/2 硬件 FIFO — 键盘扫描码入软件 ring (同步压入
+       统一输入事件流), 鼠标字节按 aux 位喂 mouse 驱动。
+       多字节 FIFO 必须一次排空, 否则 16 字节 FIFO 快速输入会溢出 */
+    u8 st = inb(KB_STATUS);
+    while (st & 1) {
+        u8 data = inb(KB_DATA);
+        if (st & 0x20) mouse.feed_byte(data);
+        else            kb_put(data);
+        st = inb(KB_STATUS);
+    }
+}
+
 u8 Keyboard::read_scan() {
     int spin = 0;
     for (;;) {
-        /* 主动 drain PS/2 硬件 FIFO (修复: 原版只读 1 字节时多字节 FIFO
-           会溢出丢键) — QEMU 11.x sendkey 不触发 IRQ1, 故完全靠轮询. */
-        u8 st = inb(KB_STATUS);
-        while (st & 1) {
-            u8 data = inb(KB_DATA);
-            if (st & 0x20) mouse.feed_byte(data);
-            else            kb.kb_put(data);
-            st = inb(KB_STATUS);
-        }
+        /* 主动 drain PS/2 硬件 FIFO (QEMU 11.x sendkey 不触发 IRQ1,
+           完全靠轮询) */
+        drain();
         /* 从软件环形缓冲返回 (IRQ1 中断填入的真实硬件数据) */
         if (kb_head_ != kb_tail_) return kb_get();
         /* 无输入时空转更新鼠标光标 — PIT 在 syscall 内 (int 0x80 门清 IF)
@@ -119,6 +133,10 @@ u8 Keyboard::read_scan() {
         if (++spin > 50000) {
             spin = 0;
             gfx.mcursor_update();
+            /* 空转一轮后返回 0 — 让 getchar() 重新轮询串口.
+               修复: 旧实现无限阻塞在这里, QEMU 11 无头模式没有
+               PS/2 事件, 串口注入的字节永远等不到检查 (输入完全死锁) */
+            return 0;
         }
     }
 }
@@ -135,6 +153,8 @@ char Keyboard::getchar() {
             return c;
         }
         u8 s = read_scan();
+        /* read_scan 空转超时返回 0 → 回到循环头重新检查串口 */
+        if (s == 0) continue;
         if (s == SC_LSHIFT || s == SC_RSHIFT) { shift_ = 1; continue; }
         if (s == (SC_LSHIFT | 0x80) || s == (SC_RSHIFT | 0x80)) { shift_ = 0; continue; }
         if (s == SC_CAPS) { caps_ = !caps_; continue; }

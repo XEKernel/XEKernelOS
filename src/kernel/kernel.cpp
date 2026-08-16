@@ -15,6 +15,7 @@
 #include "kernel/paging.h"
 #include "kernel/user.h"
 #include "kernel/task.h"
+#include "kernel/loader.h"
 #include "fs/fat12.h"
 #include "fs/ext2.h"
 #include "fs/vfs.h"
@@ -45,9 +46,14 @@ extern "C" void kernel_main(void) {
     pic_remap();    serial_write_str("pic_remap ok\n");
     idt_init();     serial_write_str("idt_init ok\n");
     mm_init();      serial_write_str("mm_init ok\n");
+    /* heap_init 必须先于 paging_init: paging_init 里 new PagingManager()
+       走 operator new → kmalloc — 堆未初始化时 kmalloc 读到零 magic
+       返回 0, ctor 在 null this 上跑 (对象本体写进物理页 0),
+       kernel_paging 指针为 0 — 后续所有 PD 构造跳过内核 PSE 克隆,
+       PG 开启后切 CR3 立即取指 #PF → triple fault (实测定位) */
+    heap_init();    serial_write_str("heap_init ok\n");
     paging_init();  serial_write_str("paging_init ok\n");
     gfx_init();     serial_write_str("gfx_init ok\n");
-    heap_init();    serial_write_str("heap_init ok\n");
     pit_init();     serial_write_str("pit_init ok\n");
     mouse_init();   serial_write_str("mouse_init ok\n");
     kb_init();      serial_write_str("kb_init ok\n");
@@ -217,13 +223,28 @@ extern "C" void kernel_main(void) {
     task_init();
     serial_write_str("tasks ready\n");
 
-    /* 用户态优先: 直接启动用户 Shell, 内核 Shell 仅应急恢复 */
+    /* 默认启动 GUI 桌面; 桌面退出 (ESC) 或加载失败后进入用户 Shell。
+       内核 Shell 仅应急恢复 */
     gfx_set_fg(COLOR_LCYAN);
-    gfx_puts_utf8("\n启动用户态 Shell...\n");
+    gfx_puts_utf8("\n启动用户态...\n");
     gfx_set_fg(COLOR_LGRAY);
 
+    bool gui_started = false;
     for (int crash_count = 0; ; crash_count++) {
-        shell_launch_user();
+        /* 记录启动时刻 — 正常运行的 Shell 退出后重置计数,
+           旧实现只累计重启次数, 第 6 次正常 EXIT 会误报"连续崩溃" */
+        u32 launch_tick = pit.ticks();
+
+        if (!gui_started && load_binary("DESKTOP.BIN", nullptr) == 0) {
+            /* 桌面正常跑过一轮 (含 ESC 退出) — 后续回 Shell,
+               Shell 里可随时 RUN DESKTOP.BIN 再进 */
+            gui_started = true;
+        } else {
+            shell_launch_user();
+        }
+
+        if (pit.ticks() - launch_tick > 500)   /* 运行超过 ~5 秒视为正常 */
+            crash_count = 0;
 
         /* 连续崩溃超过 5 次 → 进入内核应急 Shell */
         if (crash_count >= 5) {

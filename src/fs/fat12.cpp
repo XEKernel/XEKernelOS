@@ -174,12 +174,18 @@ int FatFilesystem::open(const char *name, u8 *out, u32 max_len) {
             u32 size = *(u32 *)(e + 28);
             u32 remain = (size < max_len) ? size : max_len;
             u32 offset = 0;
+            /* 逐扇区读并按 remain 截断 — 旧实现整扇区写入调用者缓冲,
+               尾簇最多越界写 511 字节 (调用者按文件大小开缓冲时溢出) */
+            u8 sbuf[512];
             while (cl >= 2 && cl < 0xFF0 && remain) {
-                u32 chunk = spc_ * bps_;
-                if (chunk > remain) chunk = remain;
-                bc_read(data_sec_ + (cl - 2) * spc_, (chunk + bps_ - 1) / bps_, (u16 *)(out + offset));
-                offset += chunk;
-                remain -= chunk;
+                for (int s = 0; s < spc_ && remain; s++) {
+                    if (bc_read(data_sec_ + (cl - 2) * spc_ + s, 1, (u16 *)sbuf)) break;
+                    u32 n = remain < bps_ ? remain : bps_;
+                    if (n > sizeof(sbuf)) n = sizeof(sbuf);
+                    for (u32 k = 0; k < n; k++) out[offset + k] = sbuf[k];
+                    offset += n;
+                    remain -= n;
+                }
                 cl = next_cluster(cl);
             }
             return (int)size;
@@ -225,7 +231,16 @@ int FatFilesystem::write(const char *name, const u8 *data, u32 size) {
     u16 first_cl = 0, prev_cl = 0;
     for (u32 i = 0; i < needed_clusters; i++) {
         u16 cl = alloc_cluster();
-        if (!cl) return -5;
+        if (!cl) {
+            /* 中途失败: 回滚已分配的簇链 — 否则 FAT 留下孤儿链,
+               find_free_cluster 永远找不到它们 (磁盘空间泄漏) */
+            while (first_cl >= 2 && first_cl < 0xFF0) {
+                u16 nx = next_cluster(first_cl);
+                write_fat_entry(first_cl, 0);
+                first_cl = nx;
+            }
+            return -5;
+        }
         if (!first_cl) first_cl = cl;
         if (prev_cl) write_fat_entry(prev_cl, cl);
         prev_cl = cl;

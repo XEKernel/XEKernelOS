@@ -1,18 +1,27 @@
 #include "kernel/task.h"
 #include "kernel/paging.h"
 #include "kernel/user.h"
+#include "kernel/syscall.h"
 #include "lib/heap.h"
 #include "lib/ports.h"
+#include "lib/uaccess.h"
 #include "drivers/serial.h"
-#include "shell/shell.h"
 
 static u32 next_pid = 1;
 static struct task_struct *main_task;
 
-u32 task_next_pid(void) { return next_pid; }
+/* 自增分配 — 旧实现只读不自增, 所有 fork 子进程拿到同一个 pid
+   (日志实证: 连续三次 RUN 的 child 都是 pid 2) */
+u32 task_next_pid(void) { return next_pid++; }
 
 struct list_head ready_queue;
+struct list_head all_tasks;
 struct task_struct *current_task;
+
+/* 僵尸回收链: 已退出任务在此等待下一次 schedule() 释放。
+   退出任务不能在自身栈上释放自己的内核栈 — 挂入本链,
+   由 (必然运行在别的栈上的) 下一次 schedule 统一 kfree */
+static struct list_head zombie_reap;
 
 static void task_wrapper(void) {
     current_task->entry(current_task->arg);
@@ -21,11 +30,15 @@ static void task_wrapper(void) {
 
 void task_init(void) {
     list_init(&ready_queue);
+    list_init(&all_tasks);
+    list_init(&zombie_reap);
     main_task = (task_struct *)kmalloc(sizeof(struct task_struct));
     main_task->pid = 0;
     main_task->state = TASK_RUNNING;
     main_task->eax = 0;
     main_task->cs  = 0x18;   /* kernel code */
+    main_task->user_esp = 0;
+    main_task->user_ss  = 0x10;  /* kernel data */
     main_task->kernel_stack = 0;
     main_task->paging = PagingManager::get_kernel_paging();
     main_task->user_stack = 0;
@@ -33,6 +46,7 @@ void task_init(void) {
     main_task->exit_code = 0;
     main_task->caps = CAP_ALL;  /* kernel shell has all privileges */
     list_init(&main_task->children);
+    list_add_tail(&main_task->all_list, &all_tasks);
     current_task = main_task;
 }
 
@@ -68,6 +82,8 @@ int task_create(void (*entry)(void *), void *arg) {
     t->cs  = 0x18;    /* kernel code */
     t->esp = (u32)sp;
     t->eflags = 0x202;
+    t->user_esp = 0;
+    t->user_ss  = 0x10;
     t->state = TASK_READY;
     t->kernel_stack = (u32)stack;
     t->entry = entry;
@@ -85,12 +101,14 @@ int task_create(void (*entry)(void *), void *arg) {
     t->priority = 128;
     t->dynamic_boost = 0;
     t->boost_expire = 0;
+    t->wake_tick = 0;
     t->caps = CAP_ALL;
     t->output_fd = -1;
     for (int i = 0; i < MAX_FD; i++) {
         t->fd_buf[i] = nullptr; t->fd_size[i] = 0;
         t->fd_pos[i] = 0; t->fd_type[i] = 0;
     }
+    list_add_tail(&t->all_list, &all_tasks);
     list_add_tail(&t->list, &ready_queue);
 
     return t->pid;
@@ -138,6 +156,8 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->cs  = 0x2B;    /* user code (ring3) */
     t->esp = (u32)sp;
     t->eflags = 0x202;
+    t->user_esp = user_stack_top;   /* iretd 恢复 ring3 时使用 */
+    t->user_ss  = 0x23;
     t->state = TASK_READY;
     t->kernel_stack = (u32)kstack;
     t->entry = nullptr;
@@ -155,6 +175,7 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->priority = 128;
     t->dynamic_boost = 0;
     t->boost_expire = 0;
+    t->wake_tick = 0;
     t->caps = (current_task ? current_task->caps : CAP_ALL); /* 准则四: inherit */
     t->output_fd = -1;
     for (int i = 0; i < MAX_FD; i++) {
@@ -166,8 +187,16 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->fd_type[0] = 4;        /* framebuffer type */
     list_add_tail(&t->sibling, &current_task->children);
     list_add_tail(&t->list, &ready_queue);
+    list_add_tail(&t->all_list, &all_tasks);
 
     current_task = t;
+    t->state = TASK_RUNNING;
+    /* 关键修复: 任务随即被直接运行 (enter_user_mode), 必须立刻出队。
+       调度器不变式: 运行中的任务绝不挂在 ready_queue 上 —
+       否则它阻塞时 (state=BLOCKED 但仍在队列) 被子进程退出唤醒时
+       list_add_tail 二次挂接, 节点脱离链表成孤立环, 调度器扫描死循环 */
+    list_del(&t->list);
+
     return t->pid;
 }
 
@@ -247,8 +276,12 @@ void task_exit(void) {
 void task_cleanup_user(void) {
     if (!current_task || current_task->pid == 0) return;
 
-    /* Remove from ready queue and sibling list */
-    list_del(&current_task->list);
+    /* Remove from ready queue and sibling list.
+       list 节点可能已出队 (运行中任务不在 ready_queue), 空指针守卫 */
+    if (current_task->list.next)
+        list_del(&current_task->list);
+    if (current_task->all_list.next)
+        list_del(&current_task->all_list);
     if (current_task->parent)
         list_del(&current_task->sibling);
 
@@ -274,13 +307,55 @@ void task_yield(void) {
 void schedule(registers_t *r) {
     if (!current_task) return;
 
-    /* ---- Clean up zombie (DEAD) tasks first — safe: new stack context ---- */
+    /* 先缓存 state: 退出任务 (DEAD) 的本体已挂入 zombie_reap,
+       下面的释放会 kfree 它 — 之后任何 current_task 解引用都是 UAF */
+    u8 cur_state = current_task->state;
+
+    /* DEAD (退出蹦床路径): 不保存上下文 — 保存无意义且属
+       use-after-free 写, 会踩坏堆元数据波及后续任务 (实测:
+       间歇性 #GP + 垃圾 EFLAGS) */
+    if (cur_state != TASK_DEAD) {
+        current_task->ecx = r->ecx;
+        current_task->edx = r->edx;
+        current_task->ebx = r->ebx;
+        current_task->ebp = r->ebp;
+        current_task->esi = r->esi;
+        current_task->edi = r->edi;
+        current_task->eax = r->eax;
+        current_task->eip = r->eip;
+        current_task->cs  = r->cs;
+        current_task->esp = r->_esp;
+        current_task->eflags = r->eflags;
+        /* 用户栈指针只在 ring3 帧上有效 (ring0 帧该位置是栈外数据) */
+        if (r->cs & 3) {
+            current_task->user_esp = r->user_esp;
+            current_task->user_ss  = r->user_ss;
+        }
+    }
+
+    /* ---- 释放僵尸 (含刚退出的 current 本体; 运行在蹦床栈上安全) ---- */
+    {
+        struct list_head *pos, *tmp;
+        list_for_each_safe(pos, tmp, &zombie_reap) {
+            struct task_struct *t = container_of(pos, struct task_struct, list);
+            list_del(pos);
+            if (t->all_list.next)
+                list_del(&t->all_list);
+            /* paging 已在 task_do_exit 里 delete 并指回内核页目录 */
+            kfree((void *)t->kernel_stack);
+            kfree(t);
+        }
+    }
+
+    /* ---- 防御: ready_queue 上残留的 DEAD (正常不应有) ---- */
     {
         struct list_head *pos, *tmp;
         list_for_each_safe(pos, tmp, &ready_queue) {
             struct task_struct *t = container_of(pos, struct task_struct, list);
             if (t->state == TASK_DEAD) {
                 list_del(pos);
+                if (t->all_list.next)
+                    list_del(&t->all_list);
                 if (t->paging && t->paging != PagingManager::get_kernel_paging())
                     delete t->paging;
                 kfree((void *)t->kernel_stack);
@@ -289,28 +364,25 @@ void schedule(registers_t *r) {
         }
     }
 
-    /* Save current task context */
-    current_task->ecx = r->ecx;
-    current_task->edx = r->edx;
-    current_task->ebx = r->ebx;
-    current_task->ebp = r->ebp;
-    current_task->esi = r->esi;
-    current_task->edi = r->edi;
-    current_task->eax = r->eax;
-    current_task->eip = r->eip;
-    current_task->cs  = r->cs;
-    current_task->esp = r->_esp;
-    current_task->eflags = r->eflags;
-
-    /* Re-queue running tasks (skip DEAD) */
-    if (current_task->state == TASK_RUNNING) {
+    /* Re-queue running tasks (skip DEAD)。
+       cur_state 为 RUNNING 时 current 未进 reap 链、未被释放 ✓ */
+    if (cur_state == TASK_RUNNING) {
         current_task->state = TASK_READY;
         list_add_tail(&current_task->list, &ready_queue);
     }
 
     if (list_empty(&ready_queue)) {
-        current_task->state = TASK_RUNNING;
-        return;
+        if (cur_state == TASK_DEAD) {
+            /* 队列空且 current 已释放 — 正常不会发生 (父进程已入队);
+               防御性停机避免 UAF 解引用 */
+            for (;;) __asm__ volatile("hlt");
+        }
+        /* 全员 BLOCKED (如唯一任务 sys_sleep): 开中断等待。
+           本上下文为 ring0 (内核页表, cs=0x18), PIT ISR 的
+           from_user=0 → 不做 paging->load, 嵌套安全 */
+        while (list_empty(&ready_queue))
+            __asm__ volatile("sti; hlt; cli");
+        /* 有任务被唤醒入队 → 落入下方正常挑选 */
     }
 
     /* ---- 准则三: O(1) dynamic priority pick ---- */
@@ -332,6 +404,15 @@ void schedule(registers_t *r) {
 
     list_del(&nt->list);
     nt->state = TASK_RUNNING;
+
+    /* 仅在真正切换任务时输出 (sys_sleep 的 tick 级自切换不打印) */
+    if (nt->pid != current_task->pid) {
+        serial_write_str("sched: pid ");
+        serial_write_u32(current_task->pid);
+        serial_write_str(" -> pid ");
+        serial_write_u32(nt->pid);
+        serial_write_char('\n');
+    }
 
     /* ---- 准则三: decay dynamic boost each tick ---- */
     static u32 decay_counter = 0;
@@ -367,8 +448,122 @@ void schedule(registers_t *r) {
     r->cs  = nt->cs;
     r->_esp = nt->esp;
     r->eflags = nt->eflags;
+    /* 诊断: 恢复帧的关键字段 */
+    if (nt->cs & 3) {
+        serial_write_str("sched-restore: pid ");
+        serial_write_u32(nt->pid);
+        serial_write_str(" eip=");
+        serial_write_u32(nt->eip);
+        serial_write_str(" uesp=");
+        serial_write_u32(nt->user_esp);
+        serial_write_char('\n');
+    }
+    /* 恢复目标任务的用户栈: iretd 弹出到 ring3 时会从帧的
+       eflags 之上取 ESP/SS — 不写则沿用被中断任务的用户栈,
+       目标任务在错误的栈上运行 (旧代码靠 fork 同 esp 巧合掩盖) */
+    if (nt->cs & 3) {
+        r->user_esp = nt->user_esp;
+        r->user_ss  = nt->user_ss;
+    }
 
     current_task = nt;
+}
+
+/* ---- 统一退出路径 (SYS_EXIT / 信号杀死共用) ---- */
+
+/* 自释放蹦床所需的静态栈与帧副本 (见 task_do_exit) */
+static u8 reaper_stack__[4096] __attribute__((aligned(16)));
+static registers_t g_reaper_frame;
+
+/* extern "C" 包装: 内联 asm 通过未修饰符号调用 */
+extern "C" void task_schedule_c(registers_t *r) { schedule(r); }
+
+void task_do_exit(registers_t *r, u32 exit_code) {
+    if (!current_task) return;
+
+    task_struct *self   = current_task;
+    task_struct *parent = self->parent;
+
+    self->exit_code = exit_code;
+    self->state = TASK_DEAD;
+    /* 运行中任务不在 ready_queue — 出队守卫防空指针解引用 */
+    if (self->list.next)
+        list_del(&self->list);
+
+    if (parent && parent->pid != 0) {
+        /* 有父进程 — 收割工作在此全部完成。
+           背景: schedule() 原地改帧, waitpid 阻塞后被唤醒时 iretd
+           直接回用户态, schedule 之后的 C 代码永远不执行 —
+           旧实现把收割留在 waitpid 的唤醒路径, 僵尸永远残留,
+           下一次 waitpid 扫到旧僵尸立即返回 → RUN 第一次不等待
+           直接回提示符 (串口日志实证)。 */
+        list_del(&self->sibling);        /* 从 parent->children 摘除 */
+
+        if (parent->state == TASK_BLOCKED) {
+            /* waitpid 返回值经父进程保存帧的 eax 传递 */
+            parent->eax = self->pid;
+            parent->state = TASK_READY;
+            list_add_tail(&parent->list, &ready_queue);
+            serial_write_str("exit-wake: parent pid ");
+            serial_write_u32(parent->pid);
+            serial_write_str(" uesp=");
+            serial_write_u32(parent->user_esp);
+            serial_write_str(" ebp=");
+            serial_write_u32(parent->ebp);
+            serial_write_char('\n');
+        }
+
+        /* 释放地址空间 (已先切回内核页目录) */
+        PagingManager::get_kernel_paging()->load();
+        if (self->paging && self->paging != PagingManager::get_kernel_paging()) {
+            delete self->paging;
+            self->paging = PagingManager::get_kernel_paging();
+        }
+
+        /* 自释放: 自身 kstack/task_struct 挂入 zombie_reap,
+           由下一次 schedule (必然运行在别的栈上) kfree。
+           本帧切到静态蹦床栈再调 schedule — schedule 会把父进程
+           上下文写进帧副本并经 popa/iretd 直接切回父进程用户态 */
+        list_add_tail(&self->list, &zombie_reap);
+
+        g_reaper_frame = *r;
+        g_reaper_frame.eflags = 0x202;
+        g_reaper_frame.eip = 0;
+        g_reaper_frame._esp = 0;
+
+        u32 sp = (u32)(reaper_stack__ + sizeof(reaper_stack__) - 64);
+        u32 fr = (u32)&g_reaper_frame;
+        __asm__ volatile(
+            "movl %1, %%ebx\n\t"    /* 帧地址存入被调用者保存寄存器 —
+                                       call 按 ABI 破坏 eax/ecx/edx,
+                                       旧版 %1 若分配在其中, call 后
+                                       mov %1,esp 读到垃圾 → popa/iret 跑飞 */
+            "movl %0, %%esp\n\t"    /* 切到蹦床栈 */
+            "pushl %%ebx\n\t"       /* schedule(&g_reaper_frame) */
+            "call task_schedule_c\n\t"
+            "movl %%ebx, %%esp\n\t" /* 帧已被填成下一任务的上下文 */
+            "popa\n\t"              /* 复刻 common_isr 的返回序列 */
+            "addl $8, %%esp\n\t"
+            "iret\n\t"
+            "ud2\n"
+            :
+            : "r"(sp), "r"(fr)
+            : "ebx", "memory"
+        );
+        __builtin_unreachable();
+    }
+
+    /* 孤儿进程 (初始 Shell): 跳回 boot loop 重启。
+       mov 切回 kernel_main 栈后返回, task_cleanup_user 负责释放 */
+    PagingManager::get_kernel_paging()->load();
+    __asm__ volatile(
+        "mov %0, %%esp\n"
+        "pop %%ebp\n"
+        "ret\n"
+        :
+        : "m"(g_entry_esp)
+    );
+    __builtin_unreachable();
 }
 
 /* ---- Signal support ---- */
@@ -376,18 +571,15 @@ void schedule(registers_t *r) {
 int task_send_signal(u32 pid, int sig) {
     if (sig < 1 || sig > 31) return -1;
 
-    /* Check all tasks in ready queue + current */
+    /* 遍历全局任务链 (含 BLOCKED — waitpid 阻塞的进程也能收到信号;
+       旧实现只扫 ready_queue, 阻塞任务永远收不到) */
     struct list_head *pos;
-    list_for_each(pos, &ready_queue) {
-        struct task_struct *t = container_of(pos, struct task_struct, list);
+    list_for_each(pos, &all_tasks) {
+        struct task_struct *t = container_of(pos, struct task_struct, all_list);
         if (t->pid == pid) {
             t->pending_signals |= (1u << sig);
             return 0;
         }
-    }
-    if (current_task && current_task->pid == pid) {
-        current_task->pending_signals |= (1u << sig);
-        return 0;
     }
     return -1;  /* task not found */
 }
@@ -419,23 +611,21 @@ void task_check_signals(registers_t *r) {
             serial_write_char('0' + sig % 10);
             serial_write_char('\n');
 
-            current_task->state = TASK_DEAD;
-            current_task->exit_code = sig;
-            list_del(&current_task->list);
-            if (current_task->parent && current_task->parent->state == TASK_BLOCKED) {
-                current_task->parent->state = TASK_READY;
-                list_add_tail(&current_task->parent->list, &ready_queue);
-            }
-            PagingManager::get_kernel_paging()->load();
-            shell_recover(r);
+            /* 清 fd 表 (含管道引用计数) — 修复信号杀死路径 fd 泄漏 */
+            syscall_cleanup_fds(current_task);
+            /* 统一退出: 唤醒父进程走调度器 / 孤儿跳回 shell 循环。
+               旧实现无条件 list_del 已出队节点 → 空指针崩溃 */
+            task_do_exit(r, (u32)sig);
             return;
         }
 
         /* SIG_IGN or default (non-fatal) → ignore */
         if (handler == SIG_IGN || handler == SIG_DFL) continue;
 
-        /* Safety: reject handler addresses outside valid code regions */
-        if (handler < 0x20000 || handler > 0x410000) {
+        /* handler 地址按当前任务页表校验 (要求 USER 可达) —
+           旧实现的 0x20000~0x410000 区间判断包含大片未映射区 */
+        if (!current_task->paging ||
+            !current_task->paging->translate_user(handler)) {
             serial_write_str("sig: bad handler ");
             serial_write_char('0' + sig % 10);
             serial_write_str(" pid=");
@@ -445,27 +635,32 @@ void task_check_signals(registers_t *r) {
             continue;
         }
 
-        /* Custom handler */
+        /* Custom handler — 仅 ring3 上下文可投递自定义 handler */
+        if (!(r->cs & 3)) continue;
+
         serial_write_str("sig: ");
         serial_write_char('0' + sig % 10);
-        serial_write_str(" → pid ");
+        serial_write_str(" -> pid ");
         serial_write_char('0' + (current_task->pid / 10) % 10);
         serial_write_char('0' + current_task->pid % 10);
         serial_write_char('\n');
 
         /* Save current user context */
         current_task->sig_saved_eip = r->eip;
-        current_task->sig_saved_esp = r->_esp;
+        current_task->sig_saved_esp = r->user_esp;
 
-        /* Build signal frame on user stack:
-           [return_addr] [signum]  — pushed before handler runs */
-        u32 *ustack = (u32 *)(r->_esp - 8);
-        ustack[0] = 0;              /* return address placeholder (sigreturn) */
-        ustack[1] = (u32)sig;       /* signal number argument */
+        /* Build signal frame on USER stack (旧实现写在 r->_esp —
+           那是 pusha 时的内核栈指针, 对用户态完全无效):
+           [ESP] = signum, [ESP+4] = 0 (sigreturn 标记) */
+        u32 frame[2] = { (u32)sig, 0 };
+        if (!copy_to_user(r->user_esp - 8, frame, 8)) {
+            /* 用户栈不可写 (最底页) → 无法投递, 忽略 */
+            continue;
+        }
 
         /* Redirect to handler */
         r->eip = handler;
-        r->_esp = (u32)ustack;
+        r->user_esp -= 8;
 
         break;  /* deliver one signal per interrupt return */
     }
@@ -475,12 +670,10 @@ void task_check_signals(registers_t *r) {
 
 bool task_has_cap(u32 pid, u32 cap) {
     struct list_head *pos;
-    list_for_each(pos, &ready_queue) {
-        struct task_struct *t = container_of(pos, struct task_struct, list);
+    list_for_each(pos, &all_tasks) {
+        struct task_struct *t = container_of(pos, struct task_struct, all_list);
         if (t->pid == pid) return (t->caps & cap) != 0;
     }
-    if (current_task && current_task->pid == pid)
-        return (current_task->caps & cap) != 0;
     return false;
 }
 
@@ -495,17 +688,12 @@ int task_drop_cap(u32 cap) {
 void task_boost_priority(u32 pid, u8 amount) {
     /* Boost the task with given PID (called from IRQ1/IRQ12 handler) */
     struct list_head *pos;
-    list_for_each(pos, &ready_queue) {
-        struct task_struct *t = container_of(pos, struct task_struct, list);
+    list_for_each(pos, &all_tasks) {
+        struct task_struct *t = container_of(pos, struct task_struct, all_list);
         if (t->pid == pid) {
             t->dynamic_boost += amount;
             if (t->dynamic_boost > 100) t->dynamic_boost = 100;
             return;
         }
-    }
-    /* Also check current_task */
-    if (current_task && current_task->pid == pid) {
-        current_task->dynamic_boost += amount;
-        if (current_task->dynamic_boost > 100) current_task->dynamic_boost = 100;
     }
 }

@@ -35,6 +35,7 @@ CXX_SRCS := $(SRCDIR)/kernel/kernel.cpp \
             $(SRCDIR)/drivers/mouse.cpp \
             $(SRCDIR)/drivers/ata.cpp \
             $(SRCDIR)/drivers/bcache.cpp \
+            $(SRCDIR)/drivers/input.cpp \
             $(SRCDIR)/drivers/gfx.cpp \
             $(SRCDIR)/drivers/serial.cpp \
             $(SRCDIR)/drivers/font_cn_load.cpp \
@@ -45,6 +46,7 @@ CXX_SRCS := $(SRCDIR)/kernel/kernel.cpp \
             $(SRCDIR)/shell/shell.cpp \
             $(SRCDIR)/lib/heap.cpp \
             $(SRCDIR)/lib/strutil.cpp \
+            $(SRCDIR)/lib/uaccess.cpp \
             $(SRCDIR)/lib/cpprt.cpp
 
 CXX_OBJS = $(patsubst $(SRCDIR)/%.cpp,$(BLDDIR)/%.o,$(CXX_SRCS))
@@ -70,6 +72,11 @@ DEMO_SRC   = $(SRCDIR)/user/demo.cpp
 DEMO_ELF   = $(BLDDIR)/demo.elf
 DEMO_BIN   = $(BLDDIR)/demo.bin
 
+# GUI desktop program (flat binary)
+DESKTOP_SRC = $(SRCDIR)/user/desktop.cpp
+DESKTOP_ELF = $(BLDDIR)/desktop.elf
+DESKTOP_BIN = $(BLDDIR)/desktop.bin
+
 CXXFLAGS = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
            -fno-exceptions -fno-rtti -fno-use-cxa-atexit -std=c++17 \
            -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
@@ -90,7 +97,7 @@ USHELL_ELF   = $(BLDDIR)/ushell.elf
 USHELL_BIN   = $(BLDDIR)/ushell.bin
 USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h
 
-all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG) $(DEMO_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN)
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG) $(DEMO_BIN) $(DESKTOP_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN)
 
 # ... existing targets ...
 
@@ -176,9 +183,18 @@ $(DEMO_ELF): $(DEMO_SRC) $(SRCDIR)/user/libc.h $(SRCDIR)/user/usys.h $(SRCDIR)/u
 $(DEMO_BIN): $(DEMO_ELF)
 	$(OBJCOPY) -O binary $< $@
 
+# GUI desktop — self-contained (no libc.h)
+$(DESKTOP_ELF): $(DESKTOP_SRC) $(SRCDIR)/user/user.ld | $(BLDDIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $(BLDDIR)/desktop.o
+	$(LD) $(LDFLAGS) -T $(SRCDIR)/user/user.ld $(BLDDIR)/desktop.o -o $@
+
+$(DESKTOP_BIN): $(DESKTOP_ELF)
+	$(OBJCOPY) -O binary $< $@
+	@echo "  Desktop: $$(wc -c < $@)B"
+
 # Build FAT12 disk image with CJK font + ext2 injected
 DISK_SIZE = 4194304  # 4MB
-$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) $(DEMO_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN) $(EXT2_IMG) tools/mkdisk.py
+$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) $(DEMO_BIN) $(DESKTOP_BIN) $(USHELL_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN) $(EXT2_IMG) tools/mkdisk.py
 	python tools/mkdisk.py
 	@echo "Expanding disk to 4MB and injecting font at LBA 2048..."
 	@python -c "import os; sz=os.path.getsize('$@'); open('$@','ab').write(b'\x00'*($(DISK_SIZE)-sz)); f=open('$(FONT_BIN)','rb').read(); d=open('$@','r+b'); d.seek(2048*512); d.write(f); print(f'Font {len(f)}B injected')"

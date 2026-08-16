@@ -58,22 +58,34 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd,
         user_tss_set_esp0(current_task->kernel_stack + 4096);
 
     if (argc > 0 && g_user_args[0]) {
-        /* Push argv pointers + argc onto user stack.
-           Layout: [ESP] = argc, [ESP+4] = argv[0], ... [ESP+4*argc] = 0 */
-        char *argp = g_user_args;
-        u32 *stk = (u32 *)stack_top;
+        /* 把参数字符串本体先拷到用户栈顶下方, 再压 argv 指针数组。
+           旧实现把内核 g_user_args 的地址直接作为 argv — 用户页表
+           无此映射 (且无 USER 位), 程序访问 argv 必 #PF。
+           用户栈为恒等映射 (VA==PA), 内核经 PSE 可直接写。 */
+        u32 sp = stack_top;
 
-        /* Push null sentinel + argv pointers */
-        *(--stk) = 0;  /* null terminator */
+        /* 1. 自底向上逐字拷贝参数串 (原地分割为 NUL 结尾) */
+        u32 str_addrs[16];
         int ac = 0;
-        for (ac = 0; ac < argc; ac++) {
-            *(--stk) = (u32)argp;  /* argv[ac] */
-            while (*argp && *argp != ' ') argp++;
-            if (*argp == ' ') { *argp++ = 0; }
+        char *argp = g_user_args;
+        while (*argp && ac < 16) {
             while (*argp == ' ') argp++;
-            if (*argp == 0) break;
+            if (!*argp) break;
+            str_addrs[ac++] = sp;   /* 该串在用户栈上的地址 */
+            while (*argp && *argp != ' ')
+                *(char *)(sp++) = *argp++;
+            *(char *)(sp++) = 0;
         }
-        *(--stk) = ac + 1;  /* argc */
+
+        /* 2. 对齐后压 argv 数组 + NULL + argc */
+        sp &= ~3u;
+        u32 *stk = (u32 *)sp;
+        *(--stk) = 0;                       /* argv[ac] = NULL */
+        for (int i = ac - 1; i >= 0; i--)
+            *(--stk) = str_addrs[i];        /* argv[i] */
+        *(--stk) = (u32)ac;                 /* argc */
+        if (current_task)
+            current_task->user_esp = (u32)stk;   /* 调度恢复时用真实 esp */
 
         __asm__ volatile(
             "pushl %0\n"   /* SS */

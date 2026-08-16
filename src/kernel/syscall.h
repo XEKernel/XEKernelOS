@@ -59,6 +59,7 @@
 #define IOCTL_GFX_RECT    5   /* draw_rect: edx→{i16 x,y,w,h; u8 color} */
 #define IOCTL_GFX_PIXEL   6   /* set_pixel: edx→{i16 x,y; u8 color} */
 #define IOCTL_GFX_TEXT    7   /* puts_at: edx→{i16 x,y; u8 color; char text[]} */
+#define IOCTL_GFX_BITBLT  8   /* 位块传输: edx→{i16 x,y,w,h; u8 pixels[w*h]} (调色板索引) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,3 +70,9 @@ void syscall_handler(registers_t *r);
 #ifdef __cplusplus
 }
 #endif
+
+struct task_struct;
+
+/* 关闭任务的全部 fd (含管道引用计数/缓冲释放) —
+   SYS_EXIT 与信号杀死路径共用, 防泄漏/双释放 */
+void syscall_cleanup_fds(task_struct *t);

@@ -347,6 +347,9 @@ int ufs_ls() {
                 volatile u8 b = sec[i];
                 if (b == 0) goto done_scan;
                 if (b == 0xE5) continue;
+                /* 上界守卫 — 目录项超过 16 个时溢出栈数组 (根目录
+                   每扇区恰好 16 项), 多余项跳过 */
+                if (count >= 16) goto done_scan;
                 name83_to_str(&sec[i], names[count]);
                 sizes[count] = sec[i+28] | (sec[i+29]<<8) | (sec[i+30]<<16) | (sec[i+31]<<24);
                 attrs[count] = sec[i+11];

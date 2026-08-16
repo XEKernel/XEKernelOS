@@ -6,6 +6,10 @@ struct registers_t {
     u32 vec;
     u32 err_code;
     u32 eip, cs, eflags;
+    /* 仅当被中断上下文为 ring3 时, CPU 才在 eflags 之上压入这两个字;
+       与 pusha/宏压入的字段连续, 构成完整 iretd 帧。
+       ring0 帧上读到的是栈外数据 — 只允许在 (cs&3)==3 时读写。 */
+    u32 user_esp, user_ss;
 };
 
 class IsrManager {

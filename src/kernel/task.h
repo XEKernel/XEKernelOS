@@ -32,8 +32,11 @@ struct task_struct {
     u32 ecx, edx, ebx, ebp, esi, edi;
     u32 eax;          /* 调度恢复时还原的 eax (fork 子进程首次返回为 0) */
     u32 eip, cs, esp, eflags;
+    u32 user_esp;     /* ring3 用户栈指针 (iretd 需要与 cs/ss 配对恢复) */
+    u32 user_ss;      /* 0x23 */
     u8  state;
     struct list_head list;
+    struct list_head all_list;   /* 挂入全局任务链 (含 BLOCKED, 供信号投递) */
     u32 kernel_stack;
     void (*entry)(void *);
     void *arg;
@@ -48,6 +51,7 @@ struct task_struct {
     u8   priority;        /* base priority 0-255 (higher = more CPU) */
     u8   dynamic_boost;   /* temporary boost from IRQ interaction */
     u32  boost_expire;    /* tick count when boost decays */
+    u32  wake_tick;       /* >0: sys_sleep 到期 tick (PIT 唤醒) */
 
     /* ---- 准则四：Capability Tokens ---- */
     u32  caps;            /* capability bitmask */
@@ -79,6 +83,7 @@ struct task_struct {
 #define SIG_IGN   1   /* ignore */
 
 extern struct list_head ready_queue;
+extern struct list_head all_tasks;    /* 全部任务 (含 BLOCKED/运行中) — 信号/能力查询用 */
 extern struct task_struct *current_task;
 
 void task_init(void);
@@ -93,6 +98,9 @@ void schedule(registers_t *r);
 u32  task_next_pid(void);
 int  task_send_signal(u32 pid, int sig);
 void task_check_signals(registers_t *r);
+/* 统一退出路径: 置 DEAD + 唤醒 waitpid 父进程 + 孤儿则跳回 shell 重启循环。
+   SYS_EXIT 与信号杀死共用 — 修 shell_recover 复用死亡任务内核栈的 UAF */
+void task_do_exit(registers_t *r, u32 exit_code);
 
 /* Capability management (准则四) */
 void task_boost_priority(u32 pid, u8 amount);  /* IRQ-triggered boost (准则三) */

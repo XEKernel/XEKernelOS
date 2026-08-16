@@ -13,6 +13,9 @@ public:
     void readline(char *b, int max);
     void flush();
     int  ctrl_c();
+    /* Drain PS/2 硬件 FIFO — 键盘字节入 ring, 鼠标字节喂 mouse 驱动。
+       PIT tick 调用 (GUI 模式无人轮询时的事件源), read_scan 亦复用 */
+    void drain();
 
     /* IRQ1 handler — 中断驱动输入 (注册到 isr_register(0x21, ...)) */
     static void irq_handler();

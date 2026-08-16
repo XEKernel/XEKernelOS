@@ -7,6 +7,7 @@
 #include "drivers/gfx.h"
 #include "drivers/keyboard.h"
 #include "drivers/serial.h"
+#include "drivers/pit.h"
 #include "shell/shell.h"
 #include "lib/ports.h"
 #include "lib/heap.h"
@@ -22,10 +23,10 @@ extern "C" void syscall_handler(registers_t *r);
 extern "C" void c_isr_handler(registers_t *r) {
     int vec = r->vec;
 
+    /* 不再切换 CR3: 任务页表已克隆全部内核 PSE 映射 (supervisor 可
+       访问), 中断/syscall 直接在被打断任务的页表下运行 — 消除嵌套
+       中断时 CR3 翻转导致的交错 (sys_sleep 旧 sti/hlt 实测 #GP) */
     int from_user = ((r->cs & 3) == 3);
-    if (from_user) {
-        PagingManager::get_kernel_paging()->load();
-    }
 
     void (*h)(void) = isr_mgr.lookup(vec);
     if (h) h();
@@ -36,6 +37,25 @@ extern "C" void c_isr_handler(registers_t *r) {
 
     if (vec == 0x20) {
         outb(0x20, 0x20);
+        /* 唤醒到期的 sys_sleep 任务 (阻塞调度, 替代旧 sti/hlt 忙等) */
+        {
+            struct list_head *pos;
+            u32 now = pit.ticks();
+            list_for_each(pos, &all_tasks) {
+                struct task_struct *t = container_of(pos, struct task_struct, all_list);
+                if (t->state == TASK_BLOCKED && t->wake_tick &&
+                    (i32)(now - t->wake_tick) >= 0) {
+                    t->wake_tick = 0;
+                    t->state = TASK_READY;
+                    list_add_tail(&t->list, &ready_queue);
+                }
+            }
+        }
+        /* PS/2 FIFO drain @100Hz — GUI/桌面任务不调用 kb_readline,
+           鼠标/键盘字节必须由此进入驱动与事件流 (旧版只有 shell
+           轮询, GUI 下鼠标死、ESC 失灵)。与 syscall 内的 drain 互斥:
+           int 0x80 中断门清 IF, PIT 不在 syscall 中途触发 */
+        kb.drain();
         if (kb_ctrl_c()) {
             if (current_task && (r->cs & 3) == 3) {
                 task_boost_priority(current_task->pid, 5);
@@ -53,11 +73,15 @@ extern "C" void c_isr_handler(registers_t *r) {
 
         /* Only reschedule when NOT in ring3 — ring3 tasks have a separate
            kernel stack and schedule() would corrupt their context by saving
-           the PIT frame instead of the syscall frame. */
-        if ((r->cs & 3) == 0)
+           the PIT frame instead of the syscall frame.
+           且仅当 current 处于 RUNNING: sys_sleep 后任务 BLOCKED,
+           schedule 在空队列的 sti/hlt 循环里等唤醒 — 此时 PIT 的
+           ISR 若再调 schedule, 会把 ISR 内核帧 (eip=hlt循环, cs=0x18)
+           二次保存进任务, 覆盖 sys_sleep 已存好的用户态上下文,
+           任务被恢复成"内核态 hlt"永远回不去 ring3 (实测: GUI
+           时钟冻结/ESC 失灵)。唤醒只需入队, 由外层循环挑选恢复。 */
+        if ((r->cs & 3) == 0 && current_task && current_task->state == TASK_RUNNING)
             schedule(r);
-        if ((r->cs & 3) == 3 && current_task->paging)
-            current_task->paging->load();
         return;
     }
 
@@ -116,8 +140,5 @@ extern "C" void c_isr_handler(registers_t *r) {
     if (from_user) {
         /* Check and deliver pending signals before returning to user */
         task_check_signals(r);
-
-        if (current_task && current_task->paging)
-            current_task->paging->load();
     }
 }

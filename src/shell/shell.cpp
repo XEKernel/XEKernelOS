@@ -401,22 +401,6 @@ void shell_launch_user(void) {
     __asm__ volatile("sti");
 }
 
-static u32 shell_esp;
-static u8  g_fallback_stack[4096] __attribute__((aligned(16)));
-
-void shell_save_esp(void) {
-    __asm__ volatile("movl %%esp, %0" : "=m"(shell_esp));
-}
-
-void shell_recover(registers_t *r) {
-    /* 使用专用应急栈，避免依赖 shell_loop 的栈上下文 */
-    r->eip    = (u32)shell_loop;
-    r->cs     = 0x18;
-    r->_esp   = (u32)(g_fallback_stack + 4096);
-    r->eflags = 0x202;
-    r->eax    = 0;
-}
-
 void shell_redraw(void) {
     /* Clear framebuffer and redraw shell prompt */
     gfx_clear(COLOR_BLACK);
@@ -433,7 +417,6 @@ void shell_redraw(void) {
 }
 
 void shell_loop(void) {
-    shell_save_esp();
     __asm__ volatile("sti");  /* enable interrupts → PIT fires → mcursor_update */
     for (;;) {
         gfx_set_fg(COLOR_LGREEN);

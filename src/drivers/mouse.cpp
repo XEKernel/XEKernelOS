@@ -1,6 +1,8 @@
 #include "drivers/mouse.h"
 #include "drivers/pic.h"
 #include "drivers/serial.h"
+#include "drivers/gfx.h"
+#include "drivers/input.h"
 #include "kernel/isr.h"
 #include "lib/ports.h"
 
@@ -70,6 +72,9 @@ void Mouse::init() {
     inb(0x60);
 
     cycle_ = 0;
+    /* 初始位置屏幕中央 — (0,0) 角落的光标用户几乎不可见 */
+    mx_ = gfx.fb_width() / 2;
+    my_ = gfx.fb_height() / 2;
     /* Don't enable IRQ12 — keyboard polling loop is the sole PS/2 reader.
      * Having two readers (IRQ + polling) causes byte interleaving and
      * permanent packet corruption. */
@@ -116,9 +121,22 @@ void Mouse::feed_byte(u8 data) {
 
         if (mx_ < 0) mx_ = 0;
         if (my_ < 0) my_ = 0;
-        if (mx_ > 1023) mx_ = 1023;
-        if (my_ > 767) my_ = 767;
+        /* 按实际分辨率 clamp — 旧硬编码 1023x767, 大分辨率下
+           鼠标到不了右下角 */
+        int mw = gfx.fb_width() - 1;
+        int mh = gfx.fb_height() - 1;
+        if (mw < 0) mw = 1023;
+        if (mh < 0) mh = 767;
+        if (mx_ > mw) mx_ = mw;
+        if (my_ > mh) my_ = mh;
 
+        int old_btn = mbtn_;
         mbtn_ = b & 7;
+
+        /* 压入统一输入事件流: 每 packet 一个 move (含当前按键态),
+           按键变化额外补一个 btn 事件 (GUI /dev/input 消费) */
+        input_push(1, mx_, my_, (u32)mbtn_);
+        if (mbtn_ != old_btn)
+            input_push(2, mx_, my_, (u32)mbtn_);
     }
 }

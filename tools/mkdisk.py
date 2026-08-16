@@ -61,6 +61,20 @@ if os.path.exists(demo_bin):
 else:
     print(f"Warning: {demo_bin} not found, skipping")
 
+# GUI desktop program
+desktop_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'desktop.bin')
+if os.path.exists(desktop_bin):
+    add_binary("DESKTOP BIN", desktop_bin)
+else:
+    print(f"Warning: {desktop_bin} not found, skipping")
+
+# User shell as launchable program (GUI Terminal icon)
+ushell_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'ushell.bin')
+if os.path.exists(ushell_bin):
+    add_binary("USHELL  BIN", ushell_bin)
+else:
+    print(f"Warning: {ushell_bin} not found, skipping")
+
 # Graphics demo programs
 gfx_demo = os.path.join(os.path.dirname(__file__), '..', 'build', 'gfx_demo.bin')
 if os.path.exists(gfx_demo):

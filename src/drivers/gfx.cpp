@@ -169,13 +169,25 @@ void GfxDriver::draw_rect(int x, int y, int w, int h, u8 color) {
 }
 
 void GfxDriver::puts_at(int x, int y, const char *s, u8 color) {
-    /* Temporarily save cursor and use per-char positioning */
+    /* 定位绘制 — 真透明背景: 只画字体前景像素, 不触碰底色。
+       旧实现传 bg=0x00 给 draw_char, 每个字符格被涂黑 —
+       黑色文字 (如任务栏时钟) 黑字黑底完全隐形, 时钟"永远不动"
+       (实测: 秒位每秒重画但屏幕像素恒定)。 */
     int old_cx = cx_, old_cy = cy_, old_fg = fg_;
     fg_ = color;
     int sx = x;
     for (int i = 0; s[i]; i++) {
         if (s[i] == '\n') { x = sx; y += FONT_H; continue; }
-        draw_char(x, y, s[i], color, 0x00 /* transparent background */);
+        char c = s[i];
+        if (c < 32 || c > 126) c = '?';
+        int idx = (c - 32) * FONT_H;
+        for (int row = 0; row < FONT_H; row++) {
+            u8 bits = font_8x16[idx + row];
+            for (int col = 0; col < FONT_W; col++) {
+                if (bits & (0x80 >> col))
+                    set_pixel(x + col, y + row, color);
+            }
+        }
         x += FONT_W;
     }
     fg_ = old_fg; cx_ = old_cx; cy_ = old_cy;

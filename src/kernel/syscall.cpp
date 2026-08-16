@@ -10,11 +10,13 @@
 #include "drivers/pit.h"
 #include "drivers/ata.h"
 #include "drivers/bcache.h"
+#include "drivers/input.h"
 #include "fs/fat12.h"
 #include "fs/vfs.h"
 #include "fs/ramdisk.h"
 #include "lib/heap.h"
 #include "lib/ports.h"
+#include "lib/uaccess.h"
 
 #define PIPE_BUF_SZ 4096
 
@@ -31,27 +33,38 @@ struct pipe_t {
 /* Heap break — starts at 0x10000000 (PDE 64, clear of kernel PDEs) */
 static u32 user_break = 0x10000000;
 
+/* syscall 期间 IF 关闭 (中断门), 无重入 — 内核侧暂存缓冲用 static 避免撑爆 4KB 内核栈 */
+static char g_ustr[4096];
+static u8   g_ubin[4096];
+
 /* Per-task output redirect via task_struct.output_fd (准则一) */
 
 static void sys_write(registers_t *r) {
-    char *str = (char *)r->ebx;
+    u32 str = r->ebx;
     u32 len = r->ecx;
-    if (!str || len > 4096) { r->eax = (u32)-1; return; }
-    serial_write_str_len(str, len);
+    if (len > 4096) { r->eax = (u32)-1; return; }
+    if (!copy_from_user(g_ustr, str, len)) { r->eax = (u32)-1; return; }
+    serial_write_str_len(g_ustr, len);
     serial_write_char('\n');
     r->eax = len;
 }
 
 static void sys_fwrite(registers_t *r) {
     u32 fd  = r->ebx;
-    char *str = (char *)r->ecx;
+    u32 str = r->ecx;
     u32 len = r->edx;
-    if (!str) { r->eax = (u32)-1; return; }
     if (len > 4096) len = 4096;
 
     if (fd >= MAX_FD || !current_task->fd_buf[fd]) { r->eax = (u32)-1; return; }
 
     u8 typ = current_task->fd_type[fd];
+
+    /* null/zero 设备: 不接触用户缓冲, 直接丢弃 */
+    if (typ == 5 || typ == 6) { r->eax = len; return; }
+
+    if (!copy_from_user(g_ubin, str, len)) { r->eax = (u32)-1; return; }
+    const u8 *data = g_ubin;
+
     if (typ == 3) {  /* pipe write-end */
         pipe_t *pipe = (pipe_t *)current_task->fd_buf[fd];
         if (pipe->broken) { r->eax = (u32)-1; return; }  /* 准则二: broken pipe */
@@ -59,7 +72,7 @@ static void sys_fwrite(registers_t *r) {
         if (len > avail) len = avail;
         if (len == 0) { r->eax = 0; return; }
         for (u32 i = 0; i < len; i++) {
-            pipe->buf[pipe->wpos] = (u8)(str ? str[i] : 0);
+            pipe->buf[pipe->wpos] = data[i];
             pipe->wpos = (pipe->wpos + 1) % PIPE_BUF_SZ;
         }
         pipe->count += len;
@@ -75,19 +88,15 @@ static void sys_fwrite(registers_t *r) {
         if (len > space) len = space;
         if (len == 0) { r->eax = 0; return; }
         for (u32 i = 0; i < len; i++)
-            current_task->fd_buf[fd][current_task->fd_pos[fd] + i] = (u8)(str ? str[i] : 0);
+            current_task->fd_buf[fd][current_task->fd_pos[fd] + i] = data[i];
         current_task->fd_pos[fd] += len;
         r->eax = len;
         return;
     }
 
     if (typ == 4) {  /* framebuffer stdout (准则一) */
-        gfx.puts_utf8(str);
-        r->eax = len;
-        return;
-    }
-
-    if (typ == 5 || typ == 6) {  /* null/zero: discard writes */
+        g_ubin[len] = 0;
+        gfx.puts_utf8((const char *)g_ubin);
         r->eax = len;
         return;
     }
@@ -98,29 +107,25 @@ static void sys_fwrite(registers_t *r) {
 static void sys_read(registers_t *r) {
     /* 准则一: SYS_READ = keyboard readline only.
        FD-based reads (files & pipes) go through SYS_FREAD. */
-    char *buf = (char *)r->ebx;
+    u32 buf = r->ebx;
     int max = (int)r->ecx;
-    if (max <= 0 || max > 4096 || !buf) { r->eax = 0; return; }
-    kb_readline(buf, max - 1);
-    buf[max - 1] = 0;
-    int n = 0; while (buf[n]) n++;
+    if (max <= 0 || max > 4096) { r->eax = 0; return; }
+    kb_readline(g_ustr, max - 1);
+    g_ustr[max - 1] = 0;
+    int n = 0; while (g_ustr[n]) n++;
     /* 调试: 串口回显内核收到的命令行, 区分"输入丢键"与"命令执行失败" */
     serial_write_str("[READ] \"");
-    serial_write_str_len(buf, n);
+    serial_write_str_len(g_ustr, n);
     serial_write_str("\" len=");
     serial_write_u32((u32)n);
     serial_write_char('\n');
-    __asm__ volatile("wbinvd");
-    /* Invalidate TLB for user buffer pages — kernel writes via PSE,
-       user reads via 4KB page table. Without invlpg, user may read stale TLB. */
-    for (char *p = buf; p < buf + max; p += 0x1000)
-        __asm__ volatile("invlpg %0" : : "m"(*p));
+    if (!copy_to_user(buf, g_ustr, (u32)n + 1)) { r->eax = (u32)-1; return; }
     r->eax = n;
 }
 
 static void sys_open(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    if (!name) { r->eax = (u32)-1; return; }
+    char name[128];
+    if (!copy_str_from_user(name, r->ebx, sizeof(name))) { r->eax = (u32)-1; return; }
 
     /* Find free fd slot */
     int fd = -1;
@@ -151,16 +156,40 @@ static void sys_open(registers_t *r) {
         r->eax = fd;
         return;
     }
+    if (str_eq(name, "/dev/input")) {
+        /* 准则一: 输入设备也是 fd — 键盘/鼠标统一事件流,
+           GUI 程序经 SYS_FREAD 逐事件读取 */
+        current_task->fd_buf[fd] = (u8 *)1;
+        current_task->fd_type[fd] = 7;  /* input device */
+        current_task->fd_size[fd] = ~0u;
+        current_task->fd_pos[fd] = 0;
+        r->eax = fd;
+        return;
+    }
 
     /* 准则四: file read requires CAP_FILE_READ */
     if (current_task && !(current_task->caps & CAP_FILE_READ)) {
         r->eax = (u32)-1; return;
     }
 
-    u8 *fb = (u8 *)kmalloc(65536);
+    /* 先 stat 拿文件大小, 按需分配缓冲 — 旧实现固定 64KB,
+       fd 表占满可达 1MB; 文件不存在时也不再白分配 */
+    int is_dir = 0;
+    int fsize = vfs_stat(name, &is_dir);
+    if (fsize < 0) {
+        serial_write_str("open: not found: ");
+        serial_write_str(name);
+        serial_write_char('\n');
+        r->eax = (u32)-1; return;
+    }
+    u32 alloc = ((u32)fsize + 0xFFF) & ~0xFFFu;   /* 4KB 对齐 */
+    if (alloc < 4096) alloc = 4096;
+    if (alloc > 65536) alloc = 65536;
+
+    u8 *fb = (u8 *)kmalloc(alloc);
     if (!fb) { r->eax = (u32)-1; return; }
 
-    int sz = vfs_open(name, fb, 65536);
+    int sz = vfs_open(name, fb, alloc);
     if (sz <= 0) { kfree(fb); r->eax = (u32)-1; return; }
 
     current_task->fd_buf[fd] = fb;
@@ -172,10 +201,10 @@ static void sys_open(registers_t *r) {
 
 static void sys_fread(registers_t *r) {
     u32 fd = r->ebx;
-    char *buf = (char *)r->ecx;
+    u32 buf = r->ecx;
     u32 len = r->edx;
 
-    if (fd >= MAX_FD || !current_task->fd_buf[fd] || !buf) { r->eax = (u32)-1; return; }
+    if (fd >= MAX_FD || !current_task->fd_buf[fd]) { r->eax = (u32)-1; return; }
 
     /* Device fds */
     if (current_task->fd_type[fd] == 5) {  /* /dev/null: always EOF */
@@ -183,9 +212,21 @@ static void sys_fread(registers_t *r) {
     }
     if (current_task->fd_type[fd] == 6) {  /* /dev/zero: fill with zeros */
         if (len > 4096) len = 4096;
-        for (u32 i = 0; i < len; i++) buf[i] = 0;
+        for (u32 i = 0; i < len; i++) g_ubin[i] = 0;
+        if (!copy_to_user(buf, g_ubin, len)) { r->eax = (u32)-1; return; }
         r->eax = len; return;
     }
+    if (current_task->fd_type[fd] == 7) {  /* /dev/input: 弹一个事件 */
+        if (len < sizeof(input_event)) { r->eax = (u32)-1; return; }
+        input_event ev;
+        int n = input_pop(&ev);
+        if (n == 0) { r->eax = 0; return; }   /* 空: GUI 循环重试 */
+        if (!copy_to_user(buf, &ev, sizeof(ev))) { r->eax = (u32)-1; return; }
+        r->eax = (u32)n;
+        return;
+    }
+
+    if (len > 4096) len = 4096;
 
     /* 准则一: unified FD read — handles files AND pipes */
     if (current_task->fd_type[fd] == 2) {  /* pipe read-end */
@@ -197,10 +238,11 @@ static void sys_fread(registers_t *r) {
             return;
         }
         for (u32 i = 0; i < n; i++) {
-            buf[i] = pipe->buf[pipe->rpos];
+            g_ubin[i] = pipe->buf[pipe->rpos];
             pipe->rpos = (pipe->rpos + 1) % PIPE_BUF_SZ;
         }
         pipe->count -= n;
+        if (!copy_to_user(buf, g_ubin, n)) { r->eax = (u32)-1; return; }
         r->eax = n;
         return;
     }
@@ -210,8 +252,9 @@ static void sys_fread(registers_t *r) {
         !(current_task->caps & CAP_FILE_READ)) { r->eax = (u32)-1; return; }
     u32 remain = current_task->fd_size[fd] - current_task->fd_pos[fd];
     if (len > remain) len = remain;
-    if (len > 4096) len = 4096;
-    for (u32 i = 0; i < len; i++) buf[i] = current_task->fd_buf[fd][current_task->fd_pos[fd] + i];
+    for (u32 i = 0; i < len; i++)
+        g_ubin[i] = current_task->fd_buf[fd][current_task->fd_pos[fd] + i];
+    if (len && !copy_to_user(buf, g_ubin, len)) { r->eax = (u32)-1; return; }
     current_task->fd_pos[fd] += len;
     r->eax = len;
 }
@@ -234,6 +277,7 @@ static void sys_sbrk(registers_t *r) {
         u32 phys = mm_alloc_page();
         if (!phys) { r->eax = (u32)-1; return; }
         pd->map_page(user_break, phys, PT_FLAGS);
+        pd->track_owned(phys);   /* 任务销毁时随页目录统一释放 */
         user_break += 0x1000;
     }
 
@@ -241,24 +285,26 @@ static void sys_sbrk(registers_t *r) {
 }
 
 static void sys_getcwd(registers_t *r) {
-    char *buf = (char *)r->ebx;
+    u32 buf = r->ebx;
     int max = (int)r->ecx;
-    if (!buf || max <= 0 || max > 256) { r->eax = (u32)-1; return; }
-    fat.cwd_str(buf, max);
-    int n = 0; while (buf[n]) n++;
+    if (max <= 0 || max > 256) { r->eax = (u32)-1; return; }
+    fat.cwd_str(g_ustr, max);
+    int n = 0; while (g_ustr[n]) n++;
+    if (!copy_to_user(buf, g_ustr, (u32)n + 1)) { r->eax = (u32)-1; return; }
     r->eax = n;
 }
 
 static void sys_time(registers_t *r) {
-    char *buf = (char *)r->ebx;
-    if (!buf) { r->eax = (u32)-1; return; }
+    u32 buf = r->ebx;
     auto bcd = [](u8 v) -> u8 { return ((v >> 4) & 0x0F) * 10 + (v & 0x0F); };
     outb(0x70, 0x04); u8 h = bcd(inb(0x71));
     outb(0x70, 0x02); u8 m = bcd(inb(0x71));
     outb(0x70, 0x00); u8 s = bcd(inb(0x71));
-    buf[0] = '0' + (h / 10); buf[1] = '0' + (h % 10); buf[2] = ':';
-    buf[3] = '0' + (m / 10); buf[4] = '0' + (m % 10); buf[5] = ':';
-    buf[6] = '0' + (s / 10); buf[7] = '0' + (s % 10); buf[8] = 0;
+    char tb[9];
+    tb[0] = '0' + (h / 10); tb[1] = '0' + (h % 10); tb[2] = ':';
+    tb[3] = '0' + (m / 10); tb[4] = '0' + (m % 10); tb[5] = ':';
+    tb[6] = '0' + (s / 10); tb[7] = '0' + (s % 10); tb[8] = 0;
+    if (!copy_to_user(buf, tb, 9)) { r->eax = (u32)-1; return; }
     r->eax = 8;
 }
 
@@ -270,42 +316,45 @@ static void sys_fat_dir(registers_t *r) {
 }
 
 static void sys_fat_cd(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    if (!name) { r->eax = (u32)-1; return; }
+    char name[128];
+    if (!copy_str_from_user(name, r->ebx, sizeof(name))) { r->eax = (u32)-1; return; }
     r->eax = fat.cd(name);
 }
 
 static void sys_fat_mkdir(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    if (!name) { r->eax = (u32)-1; return; }
+    char name[128];
+    if (!copy_str_from_user(name, r->ebx, sizeof(name))) { r->eax = (u32)-1; return; }
     r->eax = vfs_mkdir(name);
 }
 
 static void sys_fat_rmdir(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    if (!name) { r->eax = (u32)-1; return; }
+    char name[128];
+    if (!copy_str_from_user(name, r->ebx, sizeof(name))) { r->eax = (u32)-1; return; }
     r->eax = vfs_rmdir(name);
 }
 
 static void sys_fat_delete(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    if (!name) { r->eax = (u32)-1; return; }
+    char name[128];
+    if (!copy_str_from_user(name, r->ebx, sizeof(name))) { r->eax = (u32)-1; return; }
     r->eax = vfs_remove(name);
 }
 
 static void sys_fat_rename(registers_t *r) {
-    const char *old_name = (const char *)r->ebx;
-    const char *new_name = (const char *)r->ecx;
-    if (!old_name || !new_name) { r->eax = (u32)-1; return; }
+    char old_name[128], new_name[128];
+    if (!copy_str_from_user(old_name, r->ebx, sizeof(old_name)) ||
+        !copy_str_from_user(new_name, r->ecx, sizeof(new_name))) {
+        r->eax = (u32)-1; return;
+    }
     r->eax = vfs_rename(old_name, new_name);
 }
 
 static void sys_fat_write(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    const u8 *data = (const u8 *)r->ecx;
+    char name[128];
     u32 size = r->edx;
-    if (!name || !data || size > 4096) { r->eax = (u32)-1; return; }
-    r->eax = vfs_write(name, data, size);
+    if (size > 4096) { r->eax = (u32)-1; return; }
+    if (!copy_str_from_user(name, r->ebx, sizeof(name)) ||
+        !copy_from_user(g_ubin, r->ecx, size)) { r->eax = (u32)-1; return; }
+    r->eax = vfs_write(name, g_ubin, size);
 }
 
 /* ---- fork: clone current task with copied address space ---- */
@@ -321,11 +370,20 @@ static void sys_fork(registers_t *r) {
 
     PagingManager *child_pd = new PagingManager();
 
-    /* Copy user-space page tables (PDE 32+), skipping 4MB PSE pages */
-    for (int pde = 32; pde < 1024; pde++) {
+    /* Copy user-space page tables (PDE 1+, 用户程序在 0x400000 = PDE[1]!),
+       skipping kernel PSE pages.
+       旧实现从 PDE[32] 起 — PG 未开启年代 PDE[1] 的缺失被纯段式恒等
+       掩盖; PG 开启后 child PDE[1] 仍是克隆的内核 PSE (无 USER),
+       ring3 恢复到 fork 返回点取指即 #PF (实测 0x4019CA)。 */
+    for (int pde = 1; pde < 1024; pde++) {
         u32 src_pde = parent_pd->get_pde(pde);
         if (!(src_pde & 1)) continue;
-        if (src_pde & 0x80) continue;
+        if (src_pde & 0x80) {
+            /* 用户态 4MB PSE 页 (如显存映射): 直接共享同一物理大页 */
+            if (src_pde & 0x04)
+                child_pd->set_pde(pde, src_pde);
+            continue;
+        }
         u32 *src_pt = (u32 *)(src_pde & 0xFFFFF000);
         for (int pte = 0; pte < 1024; pte++) {
             u32 entry = src_pt[pte];
@@ -335,14 +393,17 @@ static void sys_fork(registers_t *r) {
             u32 *s = (u32 *)(entry & 0xFFFFF000), *d = (u32 *)new_phys;
             for (int k = 0; k < 1024; k++) d[k] = s[k];
             child_pd->map_page((pde << 22) | (pte << 12), new_phys, entry & 0xFFF);
+            /* 登记为子进程拥有的数据页 — 失败回滚/正常回收都释放 */
+            child_pd->track_owned(new_phys);
         }
     }
 
     task_struct *child = (task_struct *)kmalloc(sizeof(task_struct));
     u32 *kstack = (u32 *)kmalloc(4096);
     if (!child || !kstack) {
-        if (child) kfree(child);
-        delete child_pd;
+        if (child)   kfree(child);
+        if (kstack)  kfree(kstack);
+        delete child_pd;   /* owned 页随析构统一释放, 无泄漏 */
         r->eax = (u32)-1;
         return;
     }
@@ -355,6 +416,8 @@ static void sys_fork(registers_t *r) {
     child->eip   = r->eip;  child->cs    = r->cs;
     child->eflags = r->eflags;
     child->esp   = r->_esp;
+    child->user_esp = (r->cs & 3) ? r->user_esp : current_task->user_esp;
+    child->user_ss  = 0x23;
     child->state = TASK_READY;
     child->kernel_stack = (u32)kstack;
     child->entry = nullptr;  child->arg = nullptr;
@@ -372,11 +435,35 @@ static void sys_fork(registers_t *r) {
     child->priority = current_task->priority;
     child->dynamic_boost = 0;
     child->boost_expire = 0;
+    child->wake_tick = 0;
     for (int i = 0; i < MAX_FD; i++) {
-        child->fd_buf[i]  = current_task->fd_buf[i];
         child->fd_size[i] = current_task->fd_size[i];
         child->fd_pos[i]  = current_task->fd_pos[i];
         child->fd_type[i] = current_task->fd_type[i];
+        child->fd_buf[i]  = current_task->fd_buf[i];
+
+        if (child->fd_type[i] == 1 && child->fd_buf[i]) {
+            /* 文件 fd: 深拷贝缓冲 — 父子共享指针会在双方 close 时双 free */
+            u8 *nb = (u8 *)kmalloc(current_task->fd_size[i] ?
+                                   ((current_task->fd_size[i] + 0xFFF) & ~0xFFFu) : 4096);
+            if (!nb) {
+                /* 回滚: 已深拷贝的 fd 与管道引用计数 */
+                for (int j = 0; j < i; j++) {
+                    if (child->fd_type[j] == 1 && child->fd_buf[j]) kfree(child->fd_buf[j]);
+                    else if ((child->fd_type[j] == 2 || child->fd_type[j] == 3) && child->fd_buf[j])
+                        ((pipe_t *)child->fd_buf[j])->refs--;
+                }
+                kfree(child); kfree(kstack);
+                delete child_pd;
+                r->eax = (u32)-1;
+                return;
+            }
+            /* 拷贝整个已加载内容 (vfs_open 填满到 fd_size) —
+               子进程 exec_fd 依赖完整文件数据 */
+            u32 blen = current_task->fd_size[i];
+            for (u32 k = 0; k < blen; k++) nb[k] = child->fd_buf[i][k];
+            child->fd_buf[i] = nb;
+        }
         /* 管道 fd 共享同一 pipe_t: 引用计数 +1, 防止父子任一关闭时提前 kfree */
         if ((child->fd_type[i] == 2 || child->fd_type[i] == 3) && child->fd_buf[i]) {
             pipe_t *p = (pipe_t *)child->fd_buf[i];
@@ -386,6 +473,7 @@ static void sys_fork(registers_t *r) {
     list_init(&child->children);
     list_add_tail(&child->sibling, &current_task->children);
     list_add_tail(&child->list, &ready_queue);
+    list_add_tail(&child->all_list, &all_tasks);
 
     /* Copy kernel stack frame to child */
     u32 *psp = (u32 *)(current_task->kernel_stack + 4096);
@@ -399,54 +487,87 @@ static void sys_fork(registers_t *r) {
     cr->eax = 0;
     child->esp = (u32)cr;
 
+    serial_write_str("fork: child pid ");
+    serial_write_u32(child->pid);
+    serial_write_char('\n');
     r->eax = child->pid;
 }
 
-static void sys_exec(registers_t *r) {
-    const char *path = (const char *)r->ebx;
-    if (!path) { r->eax = (u32)-1; return; }
-
-    /* Read binary from disk */
-    u8 *elf_buf = (u8 *)kmalloc(65536);
-    if (!elf_buf) { r->eax = (u32)-1; return; }
-    int sz = vfs_open(path, elf_buf, 65536);
-    if (sz <= 0) { kfree(elf_buf); r->eax = (u32)-1; return; }
-
-    /* Replace current task's address space */
-    PagingManager *old_pd = current_task->paging;
-    if (old_pd && old_pd != PagingManager::get_kernel_paging())
-        delete old_pd;
-
-    PagingManager *new_pd = new PagingManager();
-    current_task->paging = new_pd;
-
-    /* Load flat binary: copy to new physical pages at 0x400000 */
+/* exec 公共路径: 用平坦二进制替换当前任务地址空间。
+   修复三件事:
+   1) 恒等映射 (VA==PA) — 与 loader 一致; 旧实现 mm_alloc_page 的
+      随机物理页 + 用户态 syscall 传指针 → 内核经 PSE 解引用读到旧镜像
+   2) 先完整构建新地址空间再切换 — 旧实现先 delete 旧页目录,
+      中途失败 (页表 OOM) 任务回到已销毁的地址空间 → #PF 崩溃
+   3) 0x400000~0x430000 物理区由 mm 统一预留, 不经 mm_alloc_page,
+      exec 不再产生不可回收的页 */
+static bool exec_replace_address_space(registers_t *r, const u8 *data, u32 sz) {
     u32 load_addr = 0x400000;
-    u32 entry = 0x400000;
-    u32 code_pages = (sz + 0xFFF) / 0x1000;
-    for (u32 i = 0; i < code_pages; i++) {
-        u32 phys = mm_alloc_page();
-        if (!phys) { kfree(elf_buf); r->eax = (u32)-1; return; }
-        u32 chunk = sz - i * 0x1000;
-        if (chunk > 0x1000) chunk = 0x1000;
-        u8 *d = (u8 *)phys;
-        for (u32 k = 0; k < chunk; k++)
-            d[k] = elf_buf[i * 0x1000 + k];
-        new_pd->map_page(load_addr + i * 0x1000, phys, PT_FLAGS);
-    }
-
-    /* Map user stack: 0x410000–0x420000 (64KB) */
+    u32 entry     = 0x400000;   /* 调试结束恢复正位 */
     u32 stack_top = 0x420000;
-    u32 stack_base = stack_top - 0x10000;
-    for (u32 va = stack_base; va < stack_top; va += 0x1000) {
-        u32 phys = mm_alloc_page();
-        if (!phys) { kfree(elf_buf); r->eax = (u32)-1; return; }
-        new_pd->map_page(va, phys, PT_FLAGS);
+
+    PagingManager *old_pd = current_task->paging;
+    PagingManager *new_pd = new PagingManager();
+
+    /* 1. 代码/栈各分配 mm 私有物理页 (不再恒等映射)。
+          旧实现 VA 0x400000 → PA 0x400000, exec 拷贝代码直接覆盖
+          物理恒等区 — 而 fork 出的父进程 (如 ushell RUN DESKTOP) 的
+          代码/栈就在同一物理页! 子进程 exec 踩毁父进程内存, 父进程
+          waitpid 恢复后执行被覆盖字节 → #GP (实测 EIP=0x4006A9)。
+          gfxdemo(474B) 只踩文件开头侥幸不炸, desktop(2588B) 必炸。
+          mm 私有页经 track_owned 登记, 退出/失败随页目录统一释放 */
+    u32 map_sz = (sz < 0x1000) ? 0x1000 : ((sz + 0xFFF) & ~0xFFFu);
+    for (u32 off = 0; off < map_sz; off += 0x1000) {
+        u32 pa = mm_alloc_page();
+        if (!pa) { delete new_pd; return false; }
+        new_pd->map_page(load_addr + off, pa, PT_FLAGS);
+        new_pd->track_owned(pa);
+    }
+    for (u32 va = stack_top - 0x10000; va < stack_top; va += 0x1000) {
+        u32 pa = mm_alloc_page();
+        if (!pa) { delete new_pd; return false; }
+        new_pd->map_page(va, pa, PT_FLAGS);
+        new_pd->track_owned(pa);
     }
 
-    kfree(elf_buf);
+    /* 显存 4MB 用户映射 (与 loader 的 map_user_fb 一致) —
+       ring3 图形程序可直接写 framebuffer; fork 的 PSE 克隆已支持 */
+    u32 fbaddr = *(u32 *)0x500;
+    if (fbaddr >= 0x100000)
+        new_pd->map_user_4mb(fbaddr, fbaddr);
 
-    /* Build new iret frame on kernel stack */
+    /* 校验映射确实建立 (OOM 时 map_page 静默返回) */
+    if (!new_pd->translate_user(load_addr) ||
+        !new_pd->translate_user(stack_top - 4)) {
+        delete new_pd;
+        return false;
+    }
+
+    /* 2. 经内核 PSE 恒等映射写新物理页: 拷代码 + 清 .bss 尾部 + 清栈 —
+          此后不再有失败路径 */
+    for (u32 off = 0; off < map_sz; off += 0x1000) {
+        u8 *d = (u8 *)new_pd->translate_user(load_addr + off);
+        u32 chunk = (sz - off > 0x1000) ? 0x1000 : (sz - off);
+        for (u32 k = 0; k < chunk; k++) d[k] = data[off + k];
+        for (u32 k = chunk; k < 0x1000; k++) d[k] = 0;
+    }
+    for (u32 va = stack_top - 0x10000; va < stack_top; va += 0x1000) {
+        u8 *d = (u8 *)new_pd->translate_user(va);
+        for (u32 k = 0; k < 0x1000; k++) d[k] = 0;
+    }
+
+    /* 3. 切换 */
+    if (old_pd && old_pd != PagingManager::get_kernel_paging())
+        delete old_pd;   /* owned 页 (sbrk/fork 拷贝) 随析构释放 */
+    current_task->paging = new_pd;
+    /* 必须同步加载新 CR3: 旧恒等实现里新旧页表 VA 0x400000 指向同一
+       物理页, 不切也侥幸正确; 私有页实现下不切 CR3, iret 回 ring3
+       时仍走旧页表 — 新程序入口落进 fork 拷贝的旧镜像, 子进程
+       "跑着别人的代码" (实测: exec gfxdemo 后实跑 ushell 副本,
+       多副本并行抢键盘, open: not found 乱象) */
+    new_pd->load();
+
+    /* 重建内核栈上的保存帧 (供后续 schedule 恢复) */
     u32 *csp = (u32 *)(current_task->kernel_stack + 4096);
     *(--csp) = 0x23;         /* SS */
     *(--csp) = stack_top;    /* ESP */
@@ -469,14 +590,38 @@ static void sys_exec(registers_t *r) {
     current_task->esp = (u32)csp;
     current_task->eflags = 0x202;
     current_task->user_stack = stack_top;
+    current_task->user_esp = stack_top;
+    current_task->user_ss  = 0x23;
 
-    /* Rewrite our own interrupt frame so we jump to new program on iret */
+    /* 改写当前中断帧: 本次 iretd 直接进入新程序 */
     r->eip = entry;
     r->cs = 0x2B;
     r->eflags = 0x202;
+    r->user_esp = stack_top;   /* iretd 弹出的 ring3 ESP */
+    r->user_ss  = 0x23;
     r->eax = 0;
     r->ecx = 0; r->edx = 0; r->ebx = 0;
     r->ebp = 0; r->esi = 0; r->edi = 0;
+
+    serial_write_str("exec: loaded ");
+    serial_write_u32(sz);
+    serial_write_str("B at 0x400000\n");
+    return true;
+}
+
+static void sys_exec(registers_t *r) {
+    char path[128];
+    if (!copy_str_from_user(path, r->ebx, sizeof(path))) { r->eax = (u32)-1; return; }
+
+    /* Read binary from disk */
+    u8 *elf_buf = (u8 *)kmalloc(65536);
+    if (!elf_buf) { r->eax = (u32)-1; return; }
+    int sz = vfs_open(path, elf_buf, 65536);
+    if (sz <= 0) { kfree(elf_buf); r->eax = (u32)-1; return; }
+
+    if (!exec_replace_address_space(r, elf_buf, (u32)sz))
+        { kfree(elf_buf); r->eax = (u32)-1; return; }
+    kfree(elf_buf);
 }
 
 /* exec_fd(fd) — 准则五: 用户态 open 文件→传 fd，内核不解析路径 */
@@ -487,116 +632,34 @@ static void sys_exec_fd(registers_t *r) {
 
     u8 *data = current_task->fd_buf[fd];
     u32 sz   = current_task->fd_size[fd];
-    if (sz == 0 || sz > 65536) { r->eax = (u32)-1; return; }
-
-    /* Replace current task's address space */
-    PagingManager *old_pd = current_task->paging;
-    if (old_pd && old_pd != PagingManager::get_kernel_paging())
-        delete old_pd;
-
-    PagingManager *new_pd = new PagingManager();
-    current_task->paging = new_pd;
-
-    /* Load flat binary to new physical pages at 0x400000 */
-    u32 load_addr = 0x400000;
-    u32 entry = 0x400000;
-    u32 code_pages = (sz + 0xFFF) / 0x1000;
-    for (u32 i = 0; i < code_pages; i++) {
-        u32 phys = mm_alloc_page();
-        if (!phys) { r->eax = (u32)-1; return; }
-        u32 chunk = sz - i * 0x1000;
-        if (chunk > 0x1000) chunk = 0x1000;
-        u8 *d = (u8 *)phys;
-        for (u32 k = 0; k < chunk; k++)
-            d[k] = data[i * 0x1000 + k];
-        new_pd->map_page(load_addr + i * 0x1000, phys, PT_FLAGS);
+    if (sz == 0 || sz > 65536) {
+        serial_write_str("exec_fd: bad size\n");
+        r->eax = (u32)-1; return;
     }
 
-    /* Map user stack: 0x410000–0x420000 (64KB) */
-    u32 stack_top = 0x420000;
-    u32 stack_base = stack_top - 0x10000;
-    for (u32 va = stack_base; va < stack_top; va += 0x1000) {
-        u32 phys = mm_alloc_page();
-        if (!phys) { r->eax = (u32)-1; return; }
-        new_pd->map_page(va, phys, PT_FLAGS);
+    /* 注意: exec 成功不返回, fd 由 SYS_EXIT 统一清理 */
+    if (!exec_replace_address_space(r, data, sz)) {
+        serial_write_str("exec_fd: map failed\n");
+        r->eax = (u32)-1; return;
     }
-
-    /* Build iret frame on kernel stack */
-    u32 *csp = (u32 *)(current_task->kernel_stack + 4096);
-    *(--csp) = 0x23;         /* SS */
-    *(--csp) = stack_top;    /* ESP */
-    *(--csp) = 0x202;        /* EFLAGS */
-    *(--csp) = 0x2B;         /* CS */
-    *(--csp) = entry;        /* EIP */
-    *(--csp) = 0;            /* err_code */
-    *(--csp) = 0x20;         /* vec */
-    *(--csp) = 0;            /* eax */
-    *(--csp) = 0;            /* ecx */
-    *(--csp) = 0;            /* edx */
-    *(--csp) = 0;            /* ebx */
-    csp--;
-    *csp = (u32)(csp - 3);   /* _esp */
-    *(--csp) = 0;            /* ebp */
-    *(--csp) = 0;            /* esi */
-    *(--csp) = 0;            /* edi */
-
-    current_task->eip = entry;
-    current_task->esp = (u32)csp;
-    current_task->eflags = 0x202;
-    current_task->user_stack = stack_top;
-
-    /* Rewrite our own interrupt frame so we jump to new program on iret */
-    r->eip = entry;
-    r->cs = 0x2B;
-    r->eflags = 0x202;
-    r->eax = 0;
-    r->ecx = 0; r->edx = 0; r->ebx = 0;
-    r->ebp = 0; r->esi = 0; r->edi = 0;
 }
 
 static void sys_waitpid(registers_t *r) {
-    /* Block until a child exits */
-    struct list_head *pos;
-    struct task_struct *dead_child = nullptr;
+    /* 无子进程直接返回 */
+    if (list_empty(&current_task->children)) { r->eax = (u32)-1; return; }
 
-    /* Check if any child has already exited */
-    list_for_each(pos, &current_task->children) {
-        struct task_struct *c = container_of(pos, struct task_struct, sibling);
-        if (c->state == TASK_DEAD) {
-            dead_child = c;
-            break;
-        }
-    }
-
-    if (!dead_child) {
-        /* No dead children yet — block and wait */
-        current_task->state = TASK_BLOCKED;
-        schedule(r);
-        /* When we resume, a child has exited */
-        /* Find the now-dead child */
-        list_for_each(pos, &current_task->children) {
-            struct task_struct *c = container_of(pos, struct task_struct, sibling);
-            if (c->state == TASK_DEAD) {
-                dead_child = c;
-                break;
-            }
-        }
-    }
-
-    if (dead_child) {
-        r->eax = dead_child->pid;
-        /* child 的 sibling 节点始终挂在 parent->children 上, 必须摘除 */
-        list_del(&dead_child->sibling);
-        /* child 的 list 节点在被调度器选中时已出队 (list_del 已清空 next/prev),
-           仅在仍挂接 ready_queue 时二次删除, 避免解引用空指针 */
-        if (dead_child->list.next)
-            list_del(&dead_child->list);
-        if (dead_child->paging && dead_child->paging != PagingManager::get_kernel_paging())
-            delete dead_child->paging;
-        if (dead_child->kernel_stack)
-            kfree((void *)dead_child->kernel_stack);
-        kfree(dead_child);
-    } else {
+    /* 阻塞等待。收割由子进程退出侧 (task_do_exit) 完成:
+       摘除 sibling、把返回值写进本任务保存帧的 eax、重新入队。
+       schedule 原地改帧 — 切走后 iretd 直接回到用户态 int 0x80
+       之后, eax 即子进程 pid, 本函数后续代码不会执行。
+       (旧实现在此残留僵尸: 唤醒路径的收割代码永远不跑,
+       下一次 waitpid 扫到旧僵尸立即返回 → RUN 不等待) */
+    task_struct *self = current_task;
+    current_task->state = TASK_BLOCKED;
+    schedule(r);
+    /* 仅当 schedule 未发生切换 (就绪队列空的异常情况) 才到达这里 */
+    if (current_task == self) {
+        current_task->state = TASK_RUNNING;
         r->eax = (u32)-1;
     }
 }
@@ -614,7 +677,8 @@ static void sys_close(registers_t *r) {
             kfree(pipe);
     } else if (current_task->fd_type[fd] != 4 &&
                current_task->fd_type[fd] != 5 &&
-               current_task->fd_type[fd] != 6) {
+               current_task->fd_type[fd] != 6 &&
+               current_task->fd_type[fd] != 7) {
         kfree(current_task->fd_buf[fd]);
     }
 
@@ -641,9 +705,9 @@ static void sys_lseek(registers_t *r) {
 }
 
 static void sys_stat(registers_t *r) {
-    const char *path = (const char *)r->ebx;
-    u32 *buf = (u32 *)r->ecx; /* {size, flags(0=file,1=dir), 0, 0} */
-    if (!path || !buf) { r->eax = (u32)-1; return; }
+    char path[128];
+    u32 buf = r->ecx; /* {size, flags(0=file,1=dir), 0, 0} */
+    if (!copy_str_from_user(path, r->ebx, sizeof(path))) { r->eax = (u32)-1; return; }
     /* 准则四: stat reads file metadata from disk */
     if (current_task && !(current_task->caps & CAP_FILE_READ)) {
         r->eax = (u32)-1; return;
@@ -651,11 +715,29 @@ static void sys_stat(registers_t *r) {
     int sz, is_dir;
     sz = vfs_stat(path, &is_dir);
     if (sz < 0) { r->eax = (u32)-1; return; }
-    buf[0] = (u32)sz;
-    buf[1] = is_dir ? 1u : 0u;
-    buf[2] = 0;
-    buf[3] = 0;
+    u32 out[4];
+    out[0] = (u32)sz;
+    out[1] = is_dir ? 1u : 0u;
+    out[2] = 0;
+    out[3] = 0;
+    if (!copy_to_user(buf, out, sizeof(out))) { r->eax = (u32)-1; return; }
     r->eax = 0;
+}
+
+/* 文件 fd 复制 (dup/dup2/fork 共用): 深拷贝缓冲。
+   共享指针会导致两个 fd close 时对同一 kmalloc 块双 free */
+static bool dup_file_fd(task_struct *t, u32 old_fd, int new_fd) {
+    if (t->fd_type[old_fd] != 1) return true;   /* 非文件 fd 不需要 */
+    u32 sz = t->fd_size[old_fd];
+    u32 alloc = sz ? ((sz + 0xFFF) & ~0xFFFu) : 4096;
+    u8 *nb = (u8 *)kmalloc(alloc);
+    if (!nb) return false;
+    for (u32 k = 0; k < sz; k++) nb[k] = t->fd_buf[old_fd][k];
+    t->fd_buf[new_fd]  = nb;
+    t->fd_size[new_fd] = t->fd_size[old_fd];
+    t->fd_pos[new_fd]  = t->fd_pos[old_fd];
+    t->fd_type[new_fd] = t->fd_type[old_fd];
+    return true;
 }
 
 static void sys_dup(registers_t *r) {
@@ -667,10 +749,15 @@ static void sys_dup(registers_t *r) {
     }
     if (new_fd < 0) { r->eax = (u32)-1; return; }
 
-    current_task->fd_buf[new_fd]  = current_task->fd_buf[old_fd];
-    current_task->fd_size[new_fd] = current_task->fd_size[old_fd];
-    current_task->fd_pos[new_fd]  = current_task->fd_pos[old_fd];
-    current_task->fd_type[new_fd] = current_task->fd_type[old_fd];
+    if (current_task->fd_type[old_fd] == 1) {
+        /* 文件 fd: 深拷贝 (共享指针双 close = 双 free) */
+        if (!dup_file_fd(current_task, old_fd, new_fd)) { r->eax = (u32)-1; return; }
+    } else {
+        current_task->fd_buf[new_fd]  = current_task->fd_buf[old_fd];
+        current_task->fd_size[new_fd] = current_task->fd_size[old_fd];
+        current_task->fd_pos[new_fd]  = current_task->fd_pos[old_fd];
+        current_task->fd_type[new_fd] = current_task->fd_type[old_fd];
+    }
 
     /* Increment pipe refcount (准则二: refcounted FDs) */
     if (current_task->fd_type[old_fd] == 2 || current_task->fd_type[old_fd] == 3) {
@@ -696,15 +783,20 @@ static void sys_dup2(registers_t *r) {
             if (pipe->refs <= 0) kfree(pipe);
         } else if (current_task->fd_type[new_fd] != 4 &&
                    current_task->fd_type[new_fd] != 5 &&
-                   current_task->fd_type[new_fd] != 6) {
+                   current_task->fd_type[new_fd] != 6 &&
+                   current_task->fd_type[new_fd] != 7) {
             kfree(current_task->fd_buf[new_fd]);
         }
     }
 
-    current_task->fd_buf[new_fd]  = current_task->fd_buf[old_fd];
-    current_task->fd_size[new_fd] = current_task->fd_size[old_fd];
-    current_task->fd_pos[new_fd]  = current_task->fd_pos[old_fd];
-    current_task->fd_type[new_fd] = current_task->fd_type[old_fd];
+    if (current_task->fd_type[old_fd] == 1) {
+        if (!dup_file_fd(current_task, old_fd, (int)new_fd)) { r->eax = (u32)-1; return; }
+    } else {
+        current_task->fd_buf[new_fd]  = current_task->fd_buf[old_fd];
+        current_task->fd_size[new_fd] = current_task->fd_size[old_fd];
+        current_task->fd_pos[new_fd]  = current_task->fd_pos[old_fd];
+        current_task->fd_type[new_fd] = current_task->fd_type[old_fd];
+    }
 
     /* Increment pipe refcount */
     if (current_task->fd_type[old_fd] == 2 || current_task->fd_type[old_fd] == 3) {
@@ -716,9 +808,7 @@ static void sys_dup2(registers_t *r) {
 
 /* Pipe: read_fd (ebx) and write_fd (ecx) returned via user-provided pointers */
 static void sys_pipe(registers_t *r) {
-    u32 *fds = (u32 *)r->ebx;  /* int fds[2] */
-    if (!fds) { r->eax = (u32)-1; return; }
-
+    u32 fds_va = r->ebx;  /* int fds[2] */
     /* Allocate shared pipe ring buffer */
     pipe_t *pipe = (pipe_t *)kmalloc(sizeof(pipe_t));
     if (!pipe) { r->eax = (u32)-1; return; }
@@ -749,43 +839,58 @@ static void sys_pipe(registers_t *r) {
     current_task->fd_pos[wfd]   = 0;
     current_task->fd_type[wfd]  = 3;
 
-    fds[0] = rfd;
-    fds[1] = wfd;
+    u32 fds[2] = { (u32)rfd, (u32)wfd };
+    if (!copy_to_user(fds_va, fds, sizeof(fds))) {
+        /* 回滚: 释放 pipe 与 fd 槽位 */
+        current_task->fd_buf[rfd] = nullptr;
+        current_task->fd_buf[wfd] = nullptr;
+        current_task->fd_type[rfd] = 0;
+        current_task->fd_type[wfd] = 0;
+        kfree(pipe);
+        r->eax = (u32)-1;
+        return;
+    }
     r->eax = 0;
 }
 
 static void sys_getfb(registers_t *r) {
     /* Fill user buffer with {fb_addr, w, h, pitch, bpp} (5 × u32) */
-    u32 *buf = (u32 *)r->ebx;
-    if (!buf) { r->eax = (u32)-1; return; }
-    buf[0] = (u32)gfx.fb_addr();
-    buf[1] = (u32)gfx.fb_width();
-    buf[2] = (u32)gfx.fb_height();
-    buf[3] = (u32)gfx.fb_pitch();
-    buf[4] = (u32)gfx.fb_bpp();
+    u32 buf = r->ebx;
+    u32 out[5];
+    out[0] = (u32)gfx.fb_addr();
+    out[1] = (u32)gfx.fb_width();
+    out[2] = (u32)gfx.fb_height();
+    out[3] = (u32)gfx.fb_pitch();
+    out[4] = (u32)gfx.fb_bpp();
+    if (!copy_to_user(buf, out, sizeof(out))) { r->eax = (u32)-1; return; }
     r->eax = 5;  /* number of u32 values written */
 }
 
 static void sys_mouse(registers_t *r) {
-    u32 *buf = (u32 *)r->ebx;
-    if (!buf) { r->eax = (u32)-1; return; }
+    u32 buf = r->ebx;
     int x, y, btn;
     mouse_get(&x, &y, &btn);
-    buf[0] = (u32)x;
-    buf[1] = (u32)y;
-    buf[2] = (u32)btn;
+    u32 out[3];
+    out[0] = (u32)x;
+    out[1] = (u32)y;
+    out[2] = (u32)btn;
+    if (!copy_to_user(buf, out, sizeof(out))) { r->eax = (u32)-1; return; }
     r->eax = 3;
 }
 
 static void sys_sleep(registers_t *r) {
     u32 ms = r->ebx;
     if (ms > 60000) ms = 60000;  /* cap at 1 minute */
-    /* PIT ticks at 100Hz — 1 tick = 10ms */
-    u32 target = pit.ticks() + ms / 10 + 1;
-    while (pit.ticks() < target) {
-        __asm__ volatile("sti; hlt; cli");
-    }
+    /* 阻塞调度版: 旧实现 sti/hlt 在 syscall 中途开中断 — PIT 嵌套
+       触发时 ISR 的 from_user 分支做 paging->load() 把 CR3 切回
+       用户页表, 嵌套返回后内核在错误页表下继续执行 → #GP
+       (实测: 确定性 push #GP, ESP 变内核堆地址)。
+       正确做法: 挂起当前任务, PIT tick 到期唤醒 (见 isr.cpp)。
+       schedule 原地改帧 — 后续代码不再执行, 返回值先写好 */
     r->eax = ms;
+    current_task->wake_tick = pit.ticks() + ms / 10 + 1;
+    current_task->state = TASK_BLOCKED;
+    schedule(r);
 }
 
 static void sys_cls(registers_t *r) {
@@ -809,14 +914,15 @@ static void sys_gfx_putc(registers_t *r) {
 static void sys_gfx_puts(registers_t *r) {
     int ofd = current_task ? current_task->output_fd : -1;
     if (ofd >= 0 && ofd < MAX_FD && current_task->fd_buf[ofd]) {
-        const char *s = (const char *)r->ebx;
+        if (!copy_str_from_user(g_ustr, r->ebx, sizeof(g_ustr))) { r->eax = (u32)-1; return; }
         u8 *buf = current_task->fd_buf[ofd];
         u32 size = current_task->fd_size[ofd];
         u32 *pos = &current_task->fd_pos[ofd];
-        while (*s && *pos < size)
-            buf[(*pos)++] = (u8)(*s++);
+        for (u32 i = 0; g_ustr[i] && *pos < size; i++)
+            buf[(*pos)++] = (u8)g_ustr[i];
     } else {
-        gfx.puts_utf8((const char *)r->ebx);
+        if (!copy_str_from_user(g_ustr, r->ebx, sizeof(g_ustr))) { r->eax = (u32)-1; return; }
+        gfx.puts_utf8(g_ustr);
     }
     r->eax = 0;
 }
@@ -838,10 +944,11 @@ static void sys_set_outfd(registers_t *r) {
 
 static void sys_fsync(registers_t *r) {
     u32 fd = r->ebx;
-    const char *name = (const char *)r->ecx;
-    if (fd >= MAX_FD || !current_task->fd_buf[fd] || !name || current_task->fd_type[fd] != 1) {
+    char name[128];
+    if (fd >= MAX_FD || !current_task->fd_buf[fd] || current_task->fd_type[fd] != 1) {
         r->eax = (u32)-1; return;
     }
+    if (!copy_str_from_user(name, r->ecx, sizeof(name))) { r->eax = (u32)-1; return; }
     /* 准则四: syncing file to disk requires CAP_FILE_WRITE */
     if (current_task && !(current_task->caps & CAP_FILE_WRITE)) {
         r->eax = (u32)-1; return;
@@ -854,27 +961,35 @@ static void sys_fsync(registers_t *r) {
 /* ---- ramdisk syscalls ---- */
 
 static void sys_rd_create(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    const u8 *data = (const u8 *)r->ecx;
+    char name[RAMDISK_NAME_LEN + 4];
     u32 size = r->edx;
-    r->eax = (u32)rd_create(name, data, size);
+    if (size > 4096 ||
+        !copy_str_from_user(name, r->ebx, sizeof(name)) ||
+        !copy_from_user(g_ubin, r->ecx, size)) { r->eax = (u32)-1; return; }
+    r->eax = (u32)rd_create(name, g_ubin, size);
 }
 
 static void sys_rd_read(registers_t *r) {
-    const char *name = (const char *)r->ebx;
-    u8 *out = (u8 *)r->ecx;
+    char name[RAMDISK_NAME_LEN + 4];
     u32 max = r->edx;
-    r->eax = (u32)rd_read(name, out, max);
+    if (max > 4096) max = 4096;
+    if (!copy_str_from_user(name, r->ebx, sizeof(name))) { r->eax = (u32)-1; return; }
+    int n = rd_read(name, g_ubin, max);
+    if (n > 0 && !copy_to_user(r->ecx, g_ubin, (u32)n)) { r->eax = (u32)-1; return; }
+    r->eax = (u32)n;
 }
 
 static void sys_rd_list(registers_t *r) {
-    char *out = (char *)r->ebx;
     u32 max = r->ecx;
-    r->eax = (u32)rd_list(out, max);
+    if (max > 4096) max = 4096;
+    int n = rd_list(g_ustr, max);
+    if (n > 0 && !copy_to_user(r->ebx, g_ustr, (u32)n + 1)) { r->eax = (u32)-1; return; }
+    r->eax = (u32)n;
 }
 
 static void sys_rd_remove(registers_t *r) {
-    const char *name = (const char *)r->ebx;
+    char name[RAMDISK_NAME_LEN + 4];
+    if (!copy_str_from_user(name, r->ebx, sizeof(name))) { r->eax = (u32)-1; return; }
     r->eax = (u32)rd_remove(name);
 }
 
@@ -897,57 +1012,112 @@ static void sys_ioctl(registers_t *r) {
         r->eax = 0;
         break;
     case IOCTL_GFX_PIXEL: {
-        /* arg → {i16 x, i16 y; u8 color} (5 bytes) */
-        struct { i16 x, y; u8 c; } __attribute__((packed)) *p;
-        p = (decltype(p))arg;
-        gfx.set_pixel(p->x, p->y, p->c);
+        /* arg → {i16 x, i16 y; u8 color} (5 bytes) — 经页表翻译拷入,
+           fork/exec 后用户页非恒等映射, 直接解引用会读错物理页 */
+        u8 b[5];
+        if (!copy_from_user(b, arg, 5)) { r->eax = (u32)-1; return; }
+        i16 x = (i16)(b[0] | (b[1] << 8));
+        i16 y = (i16)(b[2] | (b[3] << 8));
+        gfx.set_pixel(x, y, b[4]);
         r->eax = 0;
         break;
     }
     case IOCTL_GFX_FILL: {
         /* arg → {i16 x, y, w, h; u8 color} (9 bytes) */
-        struct { i16 x, y, w, h; u8 c; } __attribute__((packed)) *p;
-        p = (decltype(p))arg;
-        gfx.fill_rect(p->x, p->y, p->w, p->h, p->c);
+        u8 b[9];
+        if (!copy_from_user(b, arg, 9)) { r->eax = (u32)-1; return; }
+        i16 x = (i16)(b[0] | (b[1] << 8));
+        i16 y = (i16)(b[2] | (b[3] << 8));
+        i16 w = (i16)(b[4] | (b[5] << 8));
+        i16 h = (i16)(b[6] | (b[7] << 8));
+        gfx.fill_rect(x, y, w, h, b[8]);
         r->eax = 0;
         break;
     }
     case IOCTL_GFX_LINE: {
         /* arg → {i16 x1, y1, x2, y2; u8 color} (9 bytes) */
-        struct { i16 x1, y1, x2, y2; u8 c; } __attribute__((packed)) *p;
-        p = (decltype(p))arg;
-        gfx.draw_line(p->x1, p->y1, p->x2, p->y2, p->c);
+        u8 b[9];
+        if (!copy_from_user(b, arg, 9)) { r->eax = (u32)-1; return; }
+        i16 x1 = (i16)(b[0] | (b[1] << 8));
+        i16 y1 = (i16)(b[2] | (b[3] << 8));
+        i16 x2 = (i16)(b[4] | (b[5] << 8));
+        i16 y2 = (i16)(b[6] | (b[7] << 8));
+        gfx.draw_line(x1, y1, x2, y2, b[8]);
         r->eax = 0;
         break;
     }
     case IOCTL_GFX_RECT: {
-        struct { i16 x, y, w, h; u8 c; } __attribute__((packed)) *p;
-        p = (decltype(p))arg;
-        gfx.draw_rect(p->x, p->y, p->w, p->h, p->c);
+        u8 b[9];
+        if (!copy_from_user(b, arg, 9)) { r->eax = (u32)-1; return; }
+        i16 x = (i16)(b[0] | (b[1] << 8));
+        i16 y = (i16)(b[2] | (b[3] << 8));
+        i16 w = (i16)(b[4] | (b[5] << 8));
+        i16 h = (i16)(b[6] | (b[7] << 8));
+        gfx.draw_rect(x, y, w, h, b[8]);
         r->eax = 0;
         break;
     }
     case IOCTL_GFX_TEXT: {
-        /* arg → {i16 x, y; u8 color; char text[]}
-           只读用户结构 — 不再向用户缓冲区写回 (原实现 p->t[63]=0
-           会在用户只传 5 字节结构时越界写用户内存)。 */
-        const u8 *p = (const u8 *)arg;
+        /* arg → {i16 x, y; u8 color; char text[]} (最多 68 字节)
+           拷入内核缓冲再解析, 不再解引用用户指针 */
+        u8 b[68];
+        if (!copy_from_user(b, arg, 68)) { r->eax = (u32)-1; return; }
+        i16 tx = (i16)(b[0] | (b[1] << 8));
+        i16 ty = (i16)(b[2] | (b[3] << 8));
         char tb[64];
-        i16 tx = (i16)(p[0] | (p[1] << 8));
-        i16 ty = (i16)(p[2] | (p[3] << 8));
-        u8  tc = p[4];
         for (int i = 0; i < 63; i++) {
-            tb[i] = p[5 + i];
+            tb[i] = (char)b[5 + i];
             if (!tb[i]) break;
         }
         tb[63] = 0;
-        gfx.puts_at(tx, ty, tb, tc);
+        gfx.puts_at(tx, ty, tb, b[4]);
+        r->eax = 0;
+        break;
+    }
+    case IOCTL_GFX_BITBLT: {
+        /* 位块传输 (Phase 4b): edx → {i16 x,y,w,h; u8 pixels[w*h]}
+           像素为调色板索引, 逐点经 set_pixel 自带裁剪。
+           数据上限 4088 字节 (g_ubin 4096 - 8 头), 64x64 图标足够 */
+        u8 b[8];
+        if (!copy_from_user(b, arg, 8)) { r->eax = (u32)-1; return; }
+        i16 x = (i16)(b[0] | (b[1] << 8));
+        i16 y = (i16)(b[2] | (b[3] << 8));
+        i16 w = (i16)(b[4] | (b[5] << 8));
+        i16 h = (i16)(b[6] | (b[7] << 8));
+        if (w <= 0 || h <= 0 || (u32)w * (u32)h > 4088) { r->eax = (u32)-1; return; }
+        if (!copy_from_user(g_ubin, arg + 8, (u32)w * (u32)h)) { r->eax = (u32)-1; return; }
+        for (int j = 0; j < h; j++)
+            for (int i = 0; i < w; i++)
+                gfx.set_pixel(x + i, y + j, g_ubin[j * w + i]);
         r->eax = 0;
         break;
     }
     default:
         r->eax = (u32)-1;
         break;
+    }
+}
+
+/* 关闭任务全部 fd — SYS_EXIT 与信号杀死路径共用 */
+void syscall_cleanup_fds(task_struct *t) {
+    if (!t) return;
+    for (int i = 0; i < MAX_FD; i++) {
+        if (!t->fd_buf[i]) continue;
+        if (t->fd_type[i] == 2 || t->fd_type[i] == 3) {
+            pipe_t *pipe = (pipe_t *)t->fd_buf[i];
+            pipe->refs--;
+            pipe->broken = true;
+            if (pipe->refs <= 0) kfree(pipe);
+        } else if (t->fd_type[i] != 4 &&
+                   t->fd_type[i] != 5 &&
+                   t->fd_type[i] != 6 &&
+                   t->fd_type[i] != 7) {
+            kfree(t->fd_buf[i]);
+        }
+        t->fd_buf[i] = nullptr;
+        t->fd_size[i] = 0;
+        t->fd_pos[i] = 0;
+        t->fd_type[i] = 0;
     }
 }
 
@@ -979,51 +1149,13 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_FORK:       sys_fork(r);       break;
     case SYS_EXEC:       sys_exec(r);       break;
     case SYS_WAITPID:    sys_waitpid(r);    break;
-    case SYS_EXIT: {
-        /* Clean up FD table with proper pipe refcount handling */
-        for (int i = 0; i < MAX_FD; i++) {
-            if (!current_task->fd_buf[i]) continue;
-            if (current_task->fd_type[i] == 2 || current_task->fd_type[i] == 3) {
-                pipe_t *pipe = (pipe_t *)current_task->fd_buf[i];
-                pipe->refs--;
-                pipe->broken = true;
-                if (pipe->refs <= 0) kfree(pipe);
-            } else if (current_task->fd_type[i] != 4 &&
-                       current_task->fd_type[i] != 5 &&
-                       current_task->fd_type[i] != 6) {
-                kfree(current_task->fd_buf[i]);
-            }
-            current_task->fd_buf[i] = nullptr;
-            current_task->fd_size[i] = 0;
-        }
-
-        /* 子进程退出: 唤醒父进程, 走调度器 */
-        if (current_task->parent && current_task->parent->pid != 0) {
-            if (current_task->parent->state == TASK_BLOCKED) {
-                /* 父进程在 waitpid 阻塞时已被移出 ready_queue
-                   (schedule 只把 RUNNING 任务重新入队)，必须重新入队，
-                   否则父进程永远得不到调度 → RUN 后死锁。 */
-                current_task->parent->state = TASK_READY;
-                list_add_tail(&current_task->parent->list, &ready_queue);
-            }
-            current_task->state = TASK_DEAD;
-            current_task->exit_code = r->ebx;
-            PagingManager::get_kernel_paging()->load();
-            schedule(r);
-            break;
-        }
-
-        /* 孤儿进程 (初始 Shell): 跳回 boot loop 重启 */
-        PagingManager::get_kernel_paging()->load();
-        __asm__ volatile(
-            "mov %0, %%esp\n"
-            "pop %%ebp\n"
-            "ret\n"
-            :
-            : "m"(g_entry_esp)
-        );
-        __builtin_unreachable();
-    }
+    case SYS_EXIT:
+        serial_write_str("exit: pid ");
+        serial_write_u32(current_task ? current_task->pid : 0);
+        serial_write_char('\n');
+        syscall_cleanup_fds(current_task);
+        task_do_exit(r, r->ebx);
+        break;
     case SYS_GETPID:
         if (current_task)
             r->eax = current_task->pid;
@@ -1051,7 +1183,7 @@ extern "C" void syscall_handler(registers_t *r) {
         /* Restore user context saved before signal handler was called */
         if (current_task) {
             r->eip = current_task->sig_saved_eip;
-            r->_esp = current_task->sig_saved_esp;
+            r->user_esp = current_task->sig_saved_esp;   /* ring3 真实用户栈 */
             r->eax = 0;
         }
         break;
@@ -1103,11 +1235,8 @@ extern "C" void syscall_handler(registers_t *r) {
         {
             static u8 kbuf[512] __attribute__((aligned(4)));
             int res = ata_read((u32)r->ebx, 1, (u16 *)kbuf);
-        if (res == 0) {
-            u8 *ubuf = (u8 *)r->ecx;
-            for (int i = 0; i < 512; i++) ubuf[i] = kbuf[i];
-            __asm__ volatile("wbinvd" ::: "memory");
-        }
+            if (res == 0 && !copy_to_user(r->ecx, kbuf, 512))
+                res = -1;
             r->eax = (u32)res;
         }
         break;
@@ -1117,8 +1246,7 @@ extern "C" void syscall_handler(registers_t *r) {
         }
         {
             static u8 kwbuf[512] __attribute__((aligned(4)));
-            const u8 *ubuf = (const u8 *)r->ecx;
-            for (int i = 0; i < 512; i++) kwbuf[i] = ubuf[i];
+            if (!copy_from_user(kwbuf, r->ecx, 512)) { r->eax = (u32)-1; break; }
             int res = ata_write((u32)r->ebx, 1, (const u16 *)kwbuf);
             /* 用户态 FS 直写磁盘后, 内核 bcache 里的旧扇区必须失效,
                否则内核侧 (fat12/ext2) 读到过期数据 (缓存一致性) */
@@ -1133,9 +1261,12 @@ extern "C" void syscall_handler(registers_t *r) {
     case SYS_EXEC_FD:
         sys_exec_fd(r);
         break;
-    case SYS_VFS_DIR:
-        r->eax = vfs_dir((const char *)r->ebx);
+    case SYS_VFS_DIR: {
+        char path[128];
+        if (!copy_str_from_user(path, r->ebx, sizeof(path))) { r->eax = (u32)-1; break; }
+        r->eax = vfs_dir(path);
         break;
+    }
     case SYS_MEMINFO:
         r->eax = mm_free_count();
         r->ebx = mm_total_pages();

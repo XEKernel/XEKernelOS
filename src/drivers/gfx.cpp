@@ -193,6 +193,49 @@ void GfxDriver::puts_at(int x, int y, const char *s, u8 color) {
     fg_ = old_fg; cx_ = old_cx; cy_ = old_cy;
 }
 
+void GfxDriver::puts_at_utf8(int x, int y, const char *s, u8 color) {
+    /* 中文定位绘制 — 透明背景, 混合 ASCII(8x16) 与中文(16x16).
+       桌面/窗口标题等中文 UI 复用. */
+    int old_cx = cx_, old_cy = cy_, old_fg = fg_;
+    fg_ = color;
+    int sx = x;
+    int i = 0;
+    while (s[i]) {
+        u16 cp;
+        int len = utf8_decode(s + i, &cp);
+        if (len == 1 && cp < 0x80) {
+            if (cp == '\n') { x = sx; y += FONT_H; }
+            else if (cp >= 32) {
+                char c = (char)cp;
+                int idx = (c - 32) * FONT_H;
+                for (int row = 0; row < FONT_H; row++) {
+                    u8 bits = font_8x16[idx + row];
+                    for (int col = 0; col < FONT_W; col++) {
+                        if (bits & (0x80 >> col))
+                            set_pixel(x + col, y + row, color);
+                    }
+                }
+                x += FONT_W;
+            }
+        } else {
+            const unsigned char *glyph = font_cn_lookup(cp);
+            for (int row = 0; row < 16; row++) {
+                u8 b0, b1;
+                if (glyph) { b0 = glyph[row * 2]; b1 = glyph[row * 2 + 1]; }
+                else { b0 = (row == 0 || row == 15) ? 0xFF : 0x81; b1 = b0; }
+                for (int col = 0; col < 16; col++) {
+                    u8 bit = (col < 8) ? (b0 >> (7 - col)) : (b1 >> (15 - col));
+                    if (bit & 1)
+                        set_pixel(x + col, y + row, color);
+                }
+            }
+            x += 16;
+        }
+        i += len;
+    }
+    fg_ = old_fg; cx_ = old_cx; cy_ = old_cy;
+}
+
 void GfxDriver::put_hex_byte(u8 b) {
     static const char h[] = "0123456789ABCDEF";
     putc(h[b >> 4]);

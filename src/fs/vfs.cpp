@@ -140,3 +140,10 @@ int vfs_dir(const char *path) {
     if (!fs) return -1;
     return fs->dir(rel);
 }
+
+int vfs_list_dir(const char *path, DirEntry *entries, u32 max) {
+    char rel[128];
+    Filesystem *fs = vfs_resolve(path, rel);
+    if (!fs) return -1;
+    return fs->list(rel, entries, max);
+}

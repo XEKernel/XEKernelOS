@@ -20,6 +20,7 @@ public:
     int  rmdir(const char *name) override;
     int  rename(const char *old_name, const char *new_name) override;
     int  dir(const char *path) override;  /* VFS: list directory */
+    int  list(const char *path, DirEntry *e, u32 max) override;  /* 结构化目录列表 */
     u16  find_free_cluster();
     u16  alloc_cluster();
     void set_cluster(u16 cluster, u16 value);

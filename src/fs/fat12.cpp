@@ -371,6 +371,30 @@ int FatFilesystem::dir(const char * /*path*/) {
     return dir();
 }
 
+int FatFilesystem::list(const char * /*path*/, DirEntry *e, u32 max) {
+    /* 结构化目录列表 — 资源管理器使用. FAT12 基于 cwd 导航, 忽略 path. */
+    u32 n = 0;
+    int maxs = curdir_secs();
+    for (int s = 0; s < maxs && n < max; s++) {
+        if (read_curdir(s)) break;
+        for (int j = 0; j < 512; j += 32) {
+            u8 *en = buf_ + j;
+            if (en[0] == 0) return (int)n;
+            if (en[0] == 0xE5) continue;
+            if (en[11] & 0x08) continue;
+            char name[13];
+            name83_to_str(en, name);
+            e[n].is_dir = (en[11] & 0x10) ? 1 : 0;
+            int i = 0;
+            while (name[i] && i < 31) { e[n].name[i] = name[i]; i++; }
+            e[n].name[i] = 0;
+            n++;
+            if (n >= max) return (int)n;
+        }
+    }
+    return (int)n;
+}
+
 int FatFilesystem::cd(const char *name) {
     if (*name == '\\' && name[1] == 0) {
         cur_dir_cluster_ = 0;

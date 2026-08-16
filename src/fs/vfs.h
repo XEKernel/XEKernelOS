@@ -9,6 +9,12 @@
 
 #define VFS_MAX_MOUNTS 4
 
+/* 目录项 (资源管理器用): is_dir=1 目录, name 为短文件名 */
+struct DirEntry {
+    int  is_dir;
+    char name[32];
+};
+
 class Filesystem {
 public:
     /* base class virtual destructor */
@@ -40,6 +46,10 @@ public:
     /* List directory contents to framebuffer.
        path is relative to FS root. Returns 0 on success, -1 on failure. */
     virtual int dir(const char *path) = 0;
+
+    /* List directory entries into caller buffer (资源管理器用).
+       Returns count of entries on success, -1 on failure. 默认不支持. */
+    virtual int list(const char *path, DirEntry *e, u32 max) { (void)path; (void)e; (void)max; return -1; }
 };
 
 struct mount_entry {
@@ -65,6 +75,9 @@ int  vfs_mkdir(const char *path);
 int  vfs_rmdir(const char *path);
 int  vfs_rename(const char *old_path, const char *new_path);
 int  vfs_dir(const char *path);
+
+/* List directory entries into structured buffer. Returns count or -1. */
+int  vfs_list_dir(const char *path, DirEntry *entries, u32 max);
 
 /* Init VFS layer (clears mount table). */
 void vfs_init();

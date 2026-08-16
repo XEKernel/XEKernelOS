@@ -50,6 +50,7 @@
 #define SYS_EXEC_FD    47
 #define SYS_VFS_DIR    48   /* VFS directory listing: ebx=path */
 #define SYS_MEMINFO    49   /* memory info: eax=free_pages ebx=total_pages */
+#define SYS_VFS_LIST   50   /* 结构化目录列表: ebx=path ecx=DirEntry[] edx=max */
 
 /* ioctl commands for fd type 4 (framebuffer) */
 #define IOCTL_GFX_SET_FG  1
@@ -60,6 +61,7 @@
 #define IOCTL_GFX_PIXEL   6   /* set_pixel: edx→{i16 x,y; u8 color} */
 #define IOCTL_GFX_TEXT    7   /* puts_at: edx→{i16 x,y; u8 color; char text[]} */
 #define IOCTL_GFX_BITBLT  8   /* 位块传输: edx→{i16 x,y,w,h; u8 pixels[w*h]} (调色板索引) */
+#define IOCTL_GFX_TEXT_UTF8 9 /* puts_at_utf8: edx→{i16 x,y; u8 color; char utf8[]} */
 
 #ifdef __cplusplus
 extern "C" {

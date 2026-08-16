@@ -517,6 +517,7 @@ static bool exec_replace_address_space(registers_t *r, const u8 *data, u32 sz) {
           gfxdemo(474B) 只踩文件开头侥幸不炸, desktop(2588B) 必炸。
           mm 私有页经 track_owned 登记, 退出/失败随页目录统一释放 */
     u32 map_sz = (sz < 0x1000) ? 0x1000 : ((sz + 0xFFF) & ~0xFFFu);
+    map_sz += 0x10000;   /* .bss 预留 64KB — 桌面等大全局数组需额外虚址 */
     for (u32 off = 0; off < map_sz; off += 0x1000) {
         u32 pa = mm_alloc_page();
         if (!pa) { delete new_pd; return false; }
@@ -1074,6 +1075,22 @@ static void sys_ioctl(registers_t *r) {
         r->eax = 0;
         break;
     }
+    case IOCTL_GFX_TEXT_UTF8: {
+        /* 中文绘制: arg → {i16 x,y; u8 color; char utf8[]} */
+        u8 b[84];
+        if (!copy_from_user(b, arg, 84)) { r->eax = (u32)-1; return; }
+        i16 tx = (i16)(b[0] | (b[1] << 8));
+        i16 ty = (i16)(b[2] | (b[3] << 8));
+        char tb[80];
+        for (int i = 0; i < 79; i++) {
+            tb[i] = (char)b[5 + i];
+            if (!tb[i]) break;
+        }
+        tb[79] = 0;
+        gfx.puts_at_utf8(tx, ty, tb, b[4]);
+        r->eax = 0;
+        break;
+    }
     case IOCTL_GFX_BITBLT: {
         /* 位块传输 (Phase 4b): edx → {i16 x,y,w,h; u8 pixels[w*h]}
            像素为调色板索引, 逐点经 set_pixel 自带裁剪。
@@ -1265,6 +1282,24 @@ extern "C" void syscall_handler(registers_t *r) {
         char path[128];
         if (!copy_str_from_user(path, r->ebx, sizeof(path))) { r->eax = (u32)-1; break; }
         r->eax = vfs_dir(path);
+        break;
+    }
+    case SYS_VFS_LIST: {
+        /* ebx=path, ecx=DirEntry[] (用户缓冲), edx=max 条目数 */
+        char path[128];
+        u32 ubuf = r->ecx;
+        u32 max  = r->edx;
+        if (!copy_str_from_user(path, r->ebx, sizeof(path)) || max == 0 || max > 64) {
+            r->eax = (u32)-1; break;
+        }
+        DirEntry entries[64];
+        int n = vfs_list_dir(path, entries, max);
+        if (n > 0) {
+            if (!copy_to_user(ubuf, entries, (u32)n * sizeof(DirEntry))) {
+                r->eax = (u32)-1; break;
+            }
+        }
+        r->eax = (u32)n;
         break;
     }
     case SYS_MEMINFO:

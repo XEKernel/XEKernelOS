@@ -48,6 +48,7 @@ public:
     void draw_line(int x1, int y1, int x2, int y2, u8 color);
     void draw_rect(int x, int y, int w, int h, u8 color);
     void puts_at(int x, int y, const char *s, u8 color);  /* arbitrary text */
+    void puts_at_utf8(int x, int y, const char *s, u8 color);  /* 中文 UTF-8 定位绘制 */
     void cursor_draw();
     void cursor_erase();
     void put_hex_byte(u8 b);

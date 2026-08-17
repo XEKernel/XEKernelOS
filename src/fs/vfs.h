@@ -9,9 +9,10 @@
 
 #define VFS_MAX_MOUNTS 4
 
-/* 目录项 (资源管理器用): is_dir=1 目录, name 为短文件名 */
+/* 目录项 (资源管理器用): is_dir=1 目录, size 文件大小, name 为短文件名 */
 struct DirEntry {
     int  is_dir;
+    u32  size;
     char name[32];
 };
 

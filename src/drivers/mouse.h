@@ -10,7 +10,8 @@ public:
 private:
     int  mx_ = 0, my_ = 0, mbtn_ = 0;
     int  cycle_ = 0;
-    u8   pkt_[3]{};
+    int  wheel_mode_ = 0;
+    u8   pkt_[4]{};
 
     static void wait(u8 write_mode);
     static void write(u8 data);

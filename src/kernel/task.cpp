@@ -448,8 +448,9 @@ void schedule(registers_t *r) {
     r->cs  = nt->cs;
     r->_esp = nt->esp;
     r->eflags = nt->eflags;
-    /* 诊断: 恢复帧的关键字段 */
-    if (nt->cs & 3) {
+    /* 诊断: 恢复帧的关键字段 (默认关闭 — 100Hz 串口洪泛会触发
+       QEMU tcp chardev 背压, 串口 putc 忙等 (IF=0) 冻结整个内核) */
+    if (0 && (nt->cs & 3)) {
         serial_write_str("sched-restore: pid ");
         serial_write_u32(nt->pid);
         serial_write_str(" eip=");

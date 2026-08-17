@@ -62,6 +62,10 @@ void FatFilesystem::name83_to_str(u8 *e, char *name) {
     for (int k = 8; k < 11 && e[k] != ' '; k++) name[n++] = e[k];
     if (name[n-1] == '.') n--;
     name[n] = 0;
+    /* 净化: 8.3 名不含有效 UTF-8 序列时 (脏目录项/损坏), 非
+       可打印 ASCII 一律替换为 '?', 防止 GUI 渲染成方块 */
+    for (int k = 0; k < n; k++)
+        if ((u8)name[k] < 0x20 || (u8)name[k] > 0x7E) name[k] = '?';
 }
 
 void FatFilesystem::str_to_name83(const char *name, u8 *fname) {
@@ -70,6 +74,7 @@ void FatFilesystem::str_to_name83(const char *name, u8 *fname) {
     while (name[si] && name[si] != '.' && di < 8) {
         char c = name[si++];
         if (c >= 'a' && c <= 'z') c -= 32;
+        if ((u8)c < 0x20 || (u8)c > 0x7E) c = '_';   /* 非 ASCII (如中文) 不入 8.3 名 */
         fname[di++] = c;
     }
     if (name[si] == '.') {
@@ -77,6 +82,7 @@ void FatFilesystem::str_to_name83(const char *name, u8 *fname) {
         for (int k = 0; k < 3 && name[si+k]; k++) {
             char c = name[si+k];
             if (c >= 'a' && c <= 'z') c -= 32;
+            if ((u8)c < 0x20 || (u8)c > 0x7E) c = '_';
             fname[8+k] = c;
         }
     }
@@ -385,6 +391,7 @@ int FatFilesystem::list(const char * /*path*/, DirEntry *e, u32 max) {
             char name[13];
             name83_to_str(en, name);
             e[n].is_dir = (en[11] & 0x10) ? 1 : 0;
+            e[n].size   = *(u32 *)(en + 28);   /* 文件大小 */
             int i = 0;
             while (name[i] && i < 31) { e[n].name[i] = name[i]; i++; }
             e[n].name[i] = 0;
@@ -459,6 +466,11 @@ int FatFilesystem::cd(const char *name) {
 }
 
 int FatFilesystem::mkdir(const char *name) {
+    /* 同名目录已存在则失败 */
+    {
+        int is_dir = 0;
+        if (stat(name, &is_dir) >= 0) return -3;
+    }
     u16 cl = alloc_cluster();
     if (!cl) return -2;
 

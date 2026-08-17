@@ -37,6 +37,14 @@ CMDS = [
 
 def log(s): print(s, flush=True)
 
+def kill_qemu():
+    """强杀残留 QEMU (Windows 用 taskkill; 其他平台忽略)"""
+    try:
+        subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
+                       capture_output=True)
+    except FileNotFoundError:
+        pass
+
 def main():
     img  = os.path.join(BLD, 'xekernelos.img')
     disk = os.path.join(BLD, 'disk.img')
@@ -323,8 +331,7 @@ def main():
                 p.kill(); p.wait(timeout=5)
         except Exception:
             pass
-        subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
-                       capture_output=True)
+        kill_qemu()
         time.sleep(1.0)
 
         # 3. FAT 簇完整性 (qcow2 → raw 解析)
@@ -374,8 +381,7 @@ def main():
             p.kill(); p.wait(timeout=5)
         except Exception:
             pass
-        subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
-                       capture_output=True)
+        kill_qemu()
 
 if __name__ == '__main__':
     sys.exit(main())

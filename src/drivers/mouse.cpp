@@ -63,9 +63,21 @@ void Mouse::init() {
     mwrite(0xE6);                   /* set scaling 1:1 */
     if (rready()) inb(0x60);
 
-    mwrite(0xF3); mwrite(100);     /* set sample rate: 100 Hz */
+    mwrite(0xF3); mwrite(200);     /* wheel enable sequence: 200 */
     if (rready()) inb(0x60);
     if (rready()) inb(0x60);
+    mwrite(0xF3); mwrite(100);     /* 100 */
+    if (rready()) inb(0x60);
+    if (rready()) inb(0x60);
+    mwrite(0xF3); mwrite(80);      /* 80 → device switches to 4-byte w/ wheel */
+    if (rready()) inb(0x60);
+    if (rready()) inb(0x60);
+    mwrite(0xF2);                  /* read device ID */
+    if (rready()) inb(0x60);       /* ack */
+    if (rready()) {
+        u8 id = inb(0x60);
+        if (id == 3) wheel_mode_ = 1;   /* wheel present → 4-byte packets */
+    }
 
     mwrite(0xF4);                   /* enable reporting */
     if (!rready()) { serial_write_str("mouse: no ack to enable\n"); return; }
@@ -96,15 +108,14 @@ void Mouse::feed_byte(u8 data) {
     if (cycle_ == 0 && !(data & 0x08))
         return;
 
+    int psz = wheel_mode_ ? 4 : 3;
     pkt_[cycle_] = data;
-    cycle_ = (cycle_ + 1) % 3;
+    cycle_ = (cycle_ + 1) % psz;
 
     if (cycle_ == 0) {
         u8 b = pkt_[0];
 
-        /* Bits 7 (Y overflow) & 6 (X overflow) — discard entire packet.
-         * During fast movement the mouse may overflow its internal counter;
-         * the movement values in this packet are invalid. */
+        /* Bits 7 (Y overflow) & 6 (X overflow) — discard entire packet. */
         if (b & 0xC0)
             return;
 
@@ -121,8 +132,6 @@ void Mouse::feed_byte(u8 data) {
 
         if (mx_ < 0) mx_ = 0;
         if (my_ < 0) my_ = 0;
-        /* 按实际分辨率 clamp — 旧硬编码 1023x767, 大分辨率下
-           鼠标到不了右下角 */
         int mw = gfx.fb_width() - 1;
         int mh = gfx.fb_height() - 1;
         if (mw < 0) mw = 1023;
@@ -133,10 +142,16 @@ void Mouse::feed_byte(u8 data) {
         int old_btn = mbtn_;
         mbtn_ = b & 7;
 
-        /* 压入统一输入事件流: 每 packet 一个 move (含当前按键态),
-           按键变化额外补一个 btn 事件 (GUI /dev/input 消费) */
+        /* 压入统一输入事件流 */
         input_push(1, mx_, my_, (u32)mbtn_);
         if (mbtn_ != old_btn)
             input_push(2, mx_, my_, (u32)mbtn_);
+
+        /* 滚轮: 第4字节有符号 delta (正=上滚, 负=下滚) */
+        if (wheel_mode_) {
+            int wheel = (int)(signed char)pkt_[3];
+            if (wheel)
+                input_push(4, mx_, my_, (u32)wheel);
+        }
     }
 }

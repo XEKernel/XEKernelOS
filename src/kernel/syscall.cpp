@@ -96,6 +96,7 @@ static void sys_fwrite(registers_t *r) {
 
     if (typ == 4) {  /* framebuffer stdout (准则一) */
         g_ubin[len] = 0;
+        serial_write_str_len((const char *)g_ubin, len);  /* 调试镜像 */
         gfx.puts_utf8((const char *)g_ubin);
         r->eax = len;
         return;

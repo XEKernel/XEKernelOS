@@ -13,7 +13,7 @@
 
 用法: python tools/smoke_serial.py
 """
-import hashlib, os, socket, subprocess, sys, time
+import codecs, hashlib, os, socket, subprocess, sys, time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
@@ -33,6 +33,8 @@ CMDS = [
     'RUN DESKTOP.BIN', # GUI 桌面 → 探针 → sendkey esc 退出
     'ECHO Z',          # ESC 退出后 Shell 恢复 (屏幕对比断言)
     'ECHO W',          # 双保险: 屏幕应继续变化
+    'RUN SPIN.BIN',    # 抢占式调度: 父进程纯死循环 + 子进程心跳打印
+    'ECHO KILLOK',     # Ctrl+C 终止自旋进程后 Shell 必须恢复
 ]
 
 def log(s): print(s, flush=True)
@@ -164,6 +166,9 @@ def main():
         sock.settimeout(0.2)
 
         serial = ''
+        # 增量 UTF-8 解码: 串口逐字节写, TCP 分片可能切断多字节序列,
+        # 逐片 decode 会把中文误报成 U+FFFD 乱码
+        decoder = codecs.getincrementaldecoder('utf-8')('replace')
 
         def drain(dur):
             nonlocal serial
@@ -172,7 +177,7 @@ def main():
                 try:
                     d = sock.recv(4096)
                     if not d: break
-                    serial += d.decode('utf-8', 'replace')
+                    serial += decoder.decode(d)
                 except socket.timeout:
                     pass
                 except OSError:
@@ -216,6 +221,15 @@ def main():
                 desktop_base = screendump('s1_desk_base.ppm')  # 桌面基线像素数
                 sendkey('esc')          # 退出 GUI 回 shell
                 drain(4.0)
+            elif c == 'RUN SPIN.BIN':
+                # 抢占证明: 父进程是纯 CPU 死循环 (无 syscall), 子进程能打印
+                # tick 说明父进程被 PIT 时间片抢占让出了 CPU。
+                n_tick = serial.count('SPIN: child tick')
+                log(f'SPIN 子进程 tick 行数={n_tick} (若调度非抢占则恒为 0)')
+                # 子进程已退出 (只剩自旋父进程) → Ctrl+C 必定命中父进程
+                sendkey('ctrl-c')
+                drain(3.0)
+                log(f'Ctrl+C 之后: {screendump("s1_spin.ppm")} 非黑像素')
             elif c == 'ECHO Z':
                 pz = screendump('s1_ez.ppm')
                 log(f'屏幕(ECHO Z): {pz} (桌面基线 {desktop_base})')
@@ -238,7 +252,8 @@ def main():
                 log(f'FAIL: 串口日志出现 {bad}'); ok = False
         if ok: log('OK: 无 panic')
 
-        rd_lines = [l for l in serial.splitlines() if l.startswith('[READ]')]
+        # [READ] 回显与 shell 提示符在同一行 (提示符先输出), 用 in 匹配
+        rd_lines = [l for l in serial.splitlines() if '[READ]' in l and l.lstrip().startswith('XEKernel')]
         runs = [i for i, l in enumerate(rd_lines) if 'RUN GFXDEMO' in l]
         ex_after = [next((j for j, l in enumerate(rd_lines)
                           if ('ECHO X' in l or 'ECHO Y' in l) and j > i), -1)
@@ -308,6 +323,30 @@ def main():
         if 'signal: killing' in serial:
             log('注意: 有进程被信号杀死: ' +
                 '; '.join(l for l in serial.splitlines() if 'signal' in l))
+
+        # ---- M1: 抢占式调度 + SIGINT 默认终止 ----
+        n_tick  = serial.count('SPIN: child tick')
+        i_start = serial.find('SPIN: start')
+        i_done  = serial.find('SPIN: child done')
+        i_kill  = serial.find('signal: killing')
+        i_ok    = serial.find('[READ] "ECHO KILLOK"')
+        i_tl    = serial.find('SPIN: tasks=')
+        if i_start < 0:
+            log('FAIL: SPIN.BIN 未启动 (RUN 失败?)'); ok = False
+        elif i_tl < 0 or 'SPIN: tasks=?' in serial:
+            log('FAIL: SYS_TASK_LIST (任务管理器数据源) 从 ring3 调用失败'); ok = False
+        elif n_tick < 2 or i_done < 0:
+            log(f'FAIL: SPIN 子进程未运行 (tick={n_tick}, done={i_done >= 0}) '
+                f'— 抢占式调度失效, 死循环饿死了其他任务'); ok = False
+        elif i_kill < 0 or i_kill < i_done:
+            log('FAIL: Ctrl+C 未终止自旋进程 (无 signal: killing, 或早于子进程结束)')
+            ok = False
+        elif i_ok < 0 or i_ok < i_kill:
+            log('FAIL: 自旋进程被终止后 Shell 未恢复 (ECHO KILLOK 无回显)')
+            ok = False
+        else:
+            log(f'OK: 抢占式调度 (SPIN 子进程 tick={n_tick}) + Ctrl+C(SIGINT) '
+                f'终止自旋进程 + Shell 恢复 + SYS_TASK_LIST 可用')
 
         # ---- 先优雅退出 QEMU (quit 刷写缓存), 强杀仅兜底 ----
         try:

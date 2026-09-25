@@ -383,7 +383,13 @@ void shell_launch_user(void) {
 
     PagingManager *user_pd = new PagingManager();
     u32 code_pages = (ushell_blob_len + 0x3FFF) / 0x1000;
-    u32 stack_top  = 0x420000;
+    /* blob 是平坦二进制, 不含 .bss — 尾部必须清零, 否则 ufs 的
+       bpb/cur_dir_cluster 等零初始化全局变量残留上一个程序的字节,
+       CREATE 等写操作静默失败 (详见 loader.cpp 同名注释) */
+    for (u32 i = ushell_blob_len; i < code_pages * 0x1000; i++)
+        dst[i] = 0;
+    /* 与 loader/exec 保持一致: 栈顶 0x440000, 远离代码/.bss 区 */
+    u32 stack_top  = 0x440000;
     u32 stack_base = stack_top - 0x10000;
     for (u32 i = 0; i < code_pages; i++)
         user_pd->map_page(0x400000 + i * 0x1000,

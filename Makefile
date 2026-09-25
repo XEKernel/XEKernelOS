@@ -77,6 +77,11 @@ DESKTOP_SRC = $(SRCDIR)/user/desktop.cpp
 DESKTOP_ELF = $(BLDDIR)/desktop.elf
 DESKTOP_BIN = $(BLDDIR)/desktop.bin
 
+# Preemption test program (flat binary)
+SPIN_SRC = $(SRCDIR)/user/spin.cpp
+SPIN_ELF = $(BLDDIR)/spin.elf
+SPIN_BIN = $(BLDDIR)/spin.bin
+
 CXXFLAGS = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
            -fno-exceptions -fno-rtti -fno-use-cxa-atexit -std=c++17 \
            -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
@@ -97,7 +102,7 @@ USHELL_ELF   = $(BLDDIR)/ushell.elf
 USHELL_BIN   = $(BLDDIR)/ushell.bin
 USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h
 
-all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG) $(DEMO_BIN) $(DESKTOP_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN)
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG) $(DEMO_BIN) $(DESKTOP_BIN) $(SPIN_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN)
 
 # ... existing targets ...
 
@@ -192,9 +197,18 @@ $(DESKTOP_BIN): $(DESKTOP_ELF)
 	$(OBJCOPY) -O binary $< $@
 	@echo "  Desktop: $$(wc -c < $@)B"
 
+# Preemption test — pure spin parent + heartbeat child
+$(SPIN_ELF): $(SPIN_SRC) $(SRCDIR)/user/usys.h $(SRCDIR)/user/user.ld | $(BLDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR)/user -c $< -o $(BLDDIR)/spin.o
+	$(LD) $(LDFLAGS) -T $(SRCDIR)/user/user.ld $(BLDDIR)/spin.o -o $@
+
+$(SPIN_BIN): $(SPIN_ELF)
+	$(OBJCOPY) -O binary $< $@
+	@echo "  Spin: $$(wc -c < $@)B"
+
 # Build FAT12 disk image with CJK font + ext2 injected
 DISK_SIZE = 4194304  # 4MB
-$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) $(DEMO_BIN) $(DESKTOP_BIN) $(USHELL_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN) $(EXT2_IMG) tools/mkdisk.py
+$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) $(DEMO_BIN) $(DESKTOP_BIN) $(SPIN_BIN) $(USHELL_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN) $(EXT2_IMG) tools/mkdisk.py
 	python tools/mkdisk.py
 	@echo "Expanding disk to 4MB and injecting font at LBA 2048..."
 	@python -c "import os; sz=os.path.getsize('$@'); open('$@','ab').write(b'\x00'*($(DISK_SIZE)-sz)); f=open('$(FONT_BIN)','rb').read(); d=open('$@','r+b'); d.seek(2048*512); d.write(f); print(f'Font {len(f)}B injected')"

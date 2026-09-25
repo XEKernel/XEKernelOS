@@ -113,6 +113,10 @@ extern "C" void kernel_main(void) {
 
     /* Load font BEFORE any screen output — so Chinese text renders correctly */
     serial_write_str("fat_init calling...\n");
+    ata.probe_data_drive();      /* 定位承载 FAT 卷的盘 (不再硬编码从盘) */
+    serial_write_str("ata: data drive = ");
+    serial_write_char(ata.data_drive() ? '1' : '0');
+    serial_write_char('\n');
     int f = fat_init();
     serial_write_str("fat_init done\n");
     vfs_init();                /* init VFS mount table */

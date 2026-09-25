@@ -33,6 +33,9 @@ typedef unsigned char  u8;
 #define SYS_FAT_WRITE 23
 #define SYS_MEMINFO  49
 #define SYS_VFS_LIST 50
+#define SYS_TASK_LIST 51
+#define SYS_KILL     28
+#define SIGKILL       9
 #define SYS_EXIT      2
 
 #define IOCTL_FILL    3
@@ -183,6 +186,7 @@ static int is_text_file(const char *n) { return ends_with(n, ".TXT") || ends_wit
 #define WT_CTRL 4
 #define WT_DLG  5
 #define WT_CALC 6
+#define WT_TASK 7
 #define EDIT_MAX 2048
 
 /* ---- 通用控件系统 ---- */
@@ -217,6 +221,12 @@ struct ctrl {
 #define CA_DELSEL  72   /* 删除选中项 */
 #define CA_RENAME  73   /* 重命名选中项 */
 #define CA_RENOK   74   /* 重命名对话框确定 */
+#define CA_TKILL   75   /* 任务管理器: 结束选中进程 */
+#define CA_TKREF   76   /* 任务管理器: 刷新 */
+
+/* 任务快照 — 必须与内核 struct task_info 布局一致 */
+struct tinfo { u32 pid, state, priority, ring3; };
+#define TASK_MAX 16
 
 struct wnd {
     int used, type, active;
@@ -264,6 +274,7 @@ static const char *win_title(const struct wnd *w) {
     if (w->type == WT_TERM) return "终端";
     if (w->type == WT_SYSINFO) return "系统信息";
     if (w->type == WT_CALC) return "计算器";
+    if (w->type == WT_TASK) return "任务管理器";
     return w->edit_path[0] ? w->edit_path : "编辑器";
 }
 
@@ -320,13 +331,14 @@ static int g_w = 1024, g_h = 768;
 #define TASKBAR_H 28
 #define ICON_SZ 48
 struct icon { const char *label; int act; const char *file; };
-enum { I_EXPL, I_TERM, I_EDIT, I_CALC, I_GFX, I_BOUNCE };
+enum { I_EXPL, I_TERM, I_EDIT, I_CALC, I_GFX, I_BOUNCE, I_TASK };
 static const struct icon ICONS[] = {
     { "文件", I_EXPL, 0 }, { "终端", I_TERM, 0 },
     { "编辑器", I_EDIT, 0 }, { "计算器", I_CALC, 0 },
     { "演示", I_GFX,  "GFXDEMO.BIN" }, { "弹球", I_BOUNCE,"BOUNCE.BIN" },
+    { "任务", I_TASK, 0 },
 };
-#define N_ICONS 6
+#define N_ICONS 7
 static int icon_x(int i) { return 60 + i * 110; }
 static int icon_y(void)  { return 80; }
 static void draw_icon(int i) {
@@ -349,6 +361,11 @@ static void draw_icon(int i) {
         fill(x+13,y+11,10,8,C_WHITE); fill(x+26,y+11,9,8,C_WHITE);
         fill(x+13,y+22,8,5,C_WHITE); fill(x+24,y+22,8,5,C_WHITE);
         fill(x+13,y+30,8,5,C_WHITE); fill(x+24,y+30,8,5,C_WHITE);
+    } else if (d->act == I_TASK) {
+        fill(x+8,y+8,32,32,C_LGRAY); rect(x+8,y+8,32,32,C_BLACK);
+        fill(x+12,y+13,10,4,C_BLUE);  fill(x+26,y+13,10,4,C_DGRAY);
+        fill(x+12,y+21,10,4,C_GREEN); fill(x+26,y+21,10,4,C_DGRAY);
+        fill(x+12,y+29,10,4,C_LRED);  fill(x+26,y+29,10,4,C_DGRAY);
     } else {
         fill(x+8,y+8,32,32,C_BLACK); rect(x+8,y+8,32,32,C_WHITE);
         fill(x+14,y+14,5,5,C_WHITE); fill(x+19,y+19,5,5,C_WHITE); fill(x+14,y+24,5,5,C_WHITE);
@@ -411,6 +428,7 @@ static void itos_pad(char *out, int v) {
     out[n]=0;
 }
 /* ---- 滚动条 ---- */
+static int task_rows(struct wnd *w);
 static int win_total_lines(struct wnd *w) {
     if (w->type == WT_EDIT) { int l = 1; for (int i = 0; i < w->edit_len; i++) if (w->edit_buf[i] == '\n') l++; return l; }
     if (w->type == WT_EXPL) {
@@ -419,12 +437,18 @@ static int win_total_lines(struct wnd *w) {
         return (n > 0 ? n : 0) + 1;
     }
     if (w->type == WT_TERM) return T_HIST;
+    if (w->type == WT_TASK) {
+        struct tinfo t[TASK_MAX];
+        int n = _sys3(SYS_TASK_LIST, (int)t, TASK_MAX, 0);
+        return n > 0 ? n : 0;
+    }
     return 0;
 }
 static int scroll_visible(struct wnd *w) {
     if (w->type == WT_EDIT) { int v = (w->h - TB - 36) / 16; return v < 1 ? 1 : v; }
     if (w->type == WT_EXPL) { int v = (w->h - TB - 22) / 16; return v < 1 ? 1 : v; }
     if (w->type == WT_TERM) { int v = (w->h - TB) / 16 - 1; return v < 1 ? 1 : v; }
+    if (w->type == WT_TASK) return task_rows(w);
     return 0;
 }
 static void scroll_geom(struct wnd *w, int visible, int *sbh, int *thumb, int *spos, int *max) {
@@ -619,6 +643,56 @@ static void draw_win_sysinfo(struct wnd *w) {
     text_cn(cx+8, y, "调度: 动态优先级时间片轮转", C_BLACK);
 }
 
+/* ---- 任务管理器 ---- */
+static const char *task_state_name(u32 st) {
+    if (st == 0) return "运行";
+    if (st == 1) return "就绪";
+    if (st == 2) return "阻塞";
+    return "退出";
+}
+/* 列表可见行数 (绘制与滚动条必须用同一公式) */
+static int task_rows(struct wnd *w) {
+    int r = (w->h - TB - 26) / 16;
+    return r < 1 ? 1 : r;
+}
+static void draw_win_task(struct wnd *w) {
+    draw_window_title(w, "任务管理器");
+    int cx = w->x, cy = w->y + TB;
+    int cw = w->w, ch = w->h - TB;
+    fill(cx, cy, cw, ch, C_WHITE);
+    /* 工具栏按钮 (右对齐, 停靠滚动条左侧; 每次绘制按窗口宽度重算) */
+    if (w->nctrl >= 2) {
+        w->ctrls[0].x = cw - 165;
+        w->ctrls[1].x = cw - 93;
+        ctrl_draw_button(w, &w->ctrls[0]);
+        ctrl_draw_button(w, &w->ctrls[1]);
+    }
+    text_cn(cx+6, cy+4, "PID", C_DGRAY);
+    text_cn(cx+46, cy+4, "状态", C_DGRAY);
+    text_cn(cx+94, cy+4, "优先级", C_DGRAY);
+    text_cn(cx+156, cy+4, "类型", C_DGRAY);
+    struct tinfo t[TASK_MAX];
+    int n = _sys3(SYS_TASK_LIST, (int)t, TASK_MAX, 0);
+    if (n < 0) n = 0;
+    if (n == 0) { text_cn(cx+6, cy+30, "读取任务失败", C_RED); return; }
+    int vis = task_rows(w);
+    for (int i = 0; i < vis; i++) {
+        int idx = w->vscroll + i;
+        if (idx >= n) break;
+        int ry = cy + 24 + i * 16;
+        int sel = (idx == w->esel);
+        if (sel) fill(cx+2, ry-1, cw-8, 16, C_BLUE);
+        u32 c = sel ? C_WHITE : C_BLACK;
+        char sz[12];
+        itos_pad(sz, (int)t[idx].pid);
+        text(cx+6, ry, sz, c);
+        text_cn(cx+46, ry, task_state_name(t[idx].state), c);
+        itos_pad(sz, (int)t[idx].priority);
+        text(cx+94, ry, sz, c);
+        text_cn(cx+156, ry, t[idx].ring3 ? "用户" : "内核", c);
+    }
+}
+
 /* ---- 通用控件绘制 ---- */
 static struct ctrl *wadd(struct wnd *w, int type, int x, int y, int ww, int hh, int val, int id, const char *label) {
     if (w->nctrl >= CL_MAX) return 0;
@@ -736,6 +810,7 @@ static void draw_window(struct wnd *w) {
     else if (w->type == WT_CTRL) draw_win_ctrl(w);
     else if (w->type == WT_DLG) draw_win_dlg(w);
     else if (w->type == WT_CALC) draw_win_calc(w);
+    else if (w->type == WT_TASK) draw_win_task(w);
     /* 立体边框 + 右下阴影, 多窗口叠放不融合 */
     fill(w->x + w->w, w->y + 3, 3, w->h, C_DGRAY);   /* 右阴影 */
     fill(w->x + 3, w->y + w->h, w->w, 3, C_DGRAY);   /* 下阴影 */
@@ -921,6 +996,7 @@ static struct menu_item menu_items[MENU_MAX];
 #define MA_SYSINFO 23
 #define MA_CTRL    24
 #define MA_MKDIR   25
+#define MA_TASKM   26
 #define MA_SAVE    30
 #define MA_NEWEDIT  31
 #define MA_CLOSE   32
@@ -1064,6 +1140,15 @@ static void open_calc(void) {
             if (!k[0]) continue;
             wadd(w, CT_BUTTON, bx + c * (bw + gap), by + r * (bh + gap), bw, bh, 0, CAL_KEY, k);
         }
+    redraw();
+}
+/* 任务管理器: SYS_TASK_LIST 拉取进程表 + SYS_KILL 强制结束 */
+static void open_taskman(void) {
+    struct wnd *w = open_window(WT_TASK, 180, 130, 420, 300);
+    if (!w) return;
+    w->esel = -1;
+    wadd(w, CT_BUTTON, 0, 20, 68, 18, 0, CA_TKILL, "结束进程");
+    wadd(w, CT_BUTTON, 0, 20, 68, 18, 0, CA_TKREF, "刷新");
     redraw();
 }
 static void open_editor(const char *name, int load) {
@@ -1211,6 +1296,7 @@ static void menu_exec(int idx) {
     else if (action == MA_TERM) { open_window(WT_TERM, 400, 150, 420, 260); redraw(); }
     else if (action == MA_NEWTXT) { open_editor("NEWFILE.TXT", 0); }
     else if (action == MA_SYSINFO) { open_window(WT_SYSINFO, 200, 150, 360, 260); redraw(); }
+    else if (action == MA_TASKM) { open_taskman(); }
     else if (action == MA_RUN) { launch(it->file); }
     else if (action == MA_DEL) { _sys1(SYS_FAT_DEL, (int)it->file); redraw(); }
     else if (action == MA_OPEN) {
@@ -1286,6 +1372,7 @@ static void menubar_click(struct wnd *w, int x) {
     menu_x = x; menu_y = w->y + w->ctrls[0].y + 16;
     menu_add("新建文本", MA_NEWTXT, 0);
     menu_add("系统信息", MA_SYSINFO, 0);
+    menu_add("任务管理器", MA_TASKM, 0);
     menu_add("控件演示", MA_CTRL, 0);
     redraw();
 }
@@ -1294,6 +1381,16 @@ static void ctrl_press(struct wnd *w, int idx, int evx, int evy) {
     struct ctrl *c = &w->ctrls[idx];
     switch (c->type) {
         case CT_BUTTON:
+            if (w->type == WT_TASK && c->id == CA_TKILL) {
+                /* 强制结束选中进程: SIGKILL → SIG_DFL 默认动作即终止 */
+                if (w->esel >= 0) {
+                    struct tinfo t[TASK_MAX];
+                    int n = _sys3(SYS_TASK_LIST, (int)t, TASK_MAX, 0);
+                    if (n > 0 && w->esel < n) _sys2(SYS_KILL, (int)t[w->esel].pid, SIGKILL);
+                }
+                break;
+            }
+            if (w->type == WT_TASK && c->id == CA_TKREF) break;  /* 重绘即刷新 */
             if (w->type == WT_CALC && c->id == CAL_KEY) { calc_key(w, c->label); break; }
             if (w->type == WT_EXPL && c->id == CA_MKDIR) { expl_mkdir(w); break; }
             if (w->type == WT_EXPL && c->id == CA_DELSEL) { expl_delsel(w); break; }
@@ -1478,6 +1575,7 @@ extern "C" __attribute__((section(".text.startup"))) void _start(void) {
                             menu_add("新建文件夹", MA_MKDIR, 0);
                             menu_add("刷新", MA_REFRESH, 0);
                             menu_add("系统信息", MA_SYSINFO, 0);
+                            menu_add("任务管理器", MA_TASKM, 0);
                             menu_add("控件演示", MA_CTRL, 0);
                             menu_add("打开终端", MA_TERM, 0);
                         }
@@ -1486,6 +1584,7 @@ extern "C" __attribute__((section(".text.startup"))) void _start(void) {
                         menu_x = ev.x; menu_y = ev.y;
                         menu_add("刷新", MA_REFRESH, 0);
                         menu_add("系统信息", MA_SYSINFO, 0);
+                        menu_add("任务管理器", MA_TASKM, 0);
                         menu_add("控件演示", MA_CTRL, 0);
                         menu_add("打开终端", MA_TERM, 0);
                         menu_add("新建文本", MA_NEWTXT, 0);
@@ -1555,6 +1654,14 @@ extern "C" __attribute__((section(".text.startup"))) void _start(void) {
                                             else { w->esel = idx; redraw(); }             /* 首次点击选中 */
                                         }
                                     }
+                                } else if (w->type == WT_TASK) {
+                                    int cyy = ev.y - (w->y + TB);
+                                    if (cyy >= 24) {
+                                        int idx = (cyy - 24) / 16 + w->vscroll;
+                                        struct tinfo t[TASK_MAX];
+                                        int nn = _sys3(SYS_TASK_LIST, (int)t, TASK_MAX, 0);
+                                        if (nn > 0 && idx < nn) { w->esel = idx; redraw(); }
+                                    }
                                 } else if (w->type == WT_EDIT) {
                                     int cx0 = w->x, cy0 = w->y + TB;
                                     int cyy = ev.y - cy0;
@@ -1589,6 +1696,7 @@ extern "C" __attribute__((section(".text.startup"))) void _start(void) {
                                 else if (ICONS[i].act == I_TERM) open_window(WT_TERM, 460, 150, 420, 260);
                                 else if (ICONS[i].act == I_EDIT) open_editor("NEWFILE.TXT", 0);
                                 else if (ICONS[i].act == I_CALC) open_calc();
+                                else if (ICONS[i].act == I_TASK) open_taskman();
                                 else launch(ICONS[i].file);
                                 redraw();
                                 break;

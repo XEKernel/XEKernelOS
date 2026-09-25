@@ -10,7 +10,11 @@
 #include "drivers/gfx.h"
 
 #define USER_LOAD_ADDR 0x400000
-#define USER_STACK_TOP 0x420000
+/* 用户栈顶 — 必须远离代码/.bss 区: 平坦二进制不携带 .bss 大小,
+   只能预留 headroom (见 map_sz)。旧值 0x420000 距装载点仅 128KB,
+   桌面 (代码 39KB + .bss 60KB) 的 wins 数组直接压进栈区, 栈一长
+   就踩坏全局数组。抬高到 0x440000 后代码/.bss 可用 192KB。 */
+#define USER_STACK_TOP 0x440000
 #define USER_STACK_SZ  0x10000   /* 64KB */
 
 /* Map a range of pages into the user page directory.
@@ -70,20 +74,51 @@ static int load_flat_binary(const char *path, const char *args) {
     __asm__ volatile("cli");  /* prevent PIT preemption during init */
 
     PagingManager *user_pd = new PagingManager();
+    serial_write_str("launch: pd=0x");
+    serial_write_u32((u32)user_pd);
+    serial_write_char('\n');
     /* Map binary pages — plus .bss headroom (flat binary 的 .bss 不占文件,
        但全局数组/缓冲占内存 — 桌面 wins 等大数组需额外虚址空间).
        至少 4KB 起. */
     u32 map_sz = (u32)sz + 0x10000;   /* +64KB .bss 预留 */
+    /* 代码/.bss 区不得侵入用户栈区, 否则栈生长会踩坏全局数据 */
+    if (USER_LOAD_ADDR + map_sz > USER_STACK_TOP - USER_STACK_SZ) {
+        delete user_pd;
+        fail("loader: program too large");
+        return -1;
+    }
     map_user_pages(user_pd, USER_LOAD_ADDR, map_sz);
     map_user_pages(user_pd, USER_STACK_TOP - USER_STACK_SZ, USER_STACK_SZ);
     map_user_fb(user_pd);  /* so ring3 can access framebuffer */
 
-    task_create_user((void *)USER_LOAD_ADDR, USER_STACK_TOP, user_pd);
+    /* 平坦二进制不携带 .bss 信息 — 装载区尾部必须显式清零。
+       否则零初始化的全局变量会残留"上一个程序"留在这批物理页里的字节
+       (实测: 用户 Shell 的 cur_dir_cluster 残留 desktop 的代码字节,
+       dir_find_free_slot 走错分支 → CREATE 静默失败)。
+       恒等映射区 (VA==PA) 已由 mm 预留, 内核可直接写。 */
+    {
+        u8 *z = (u8 *)USER_LOAD_ADDR;
+        for (u32 i = (u32)sz; i < map_sz; i++) z[i] = 0;
+    }
+
+    int tpid = task_create_user((void *)USER_LOAD_ADDR, USER_STACK_TOP, user_pd);
+    serial_write_str("launch: task pid=");
+    serial_write_u32((u32)tpid);
+    serial_write_str(" kstack=0x");
+    serial_write_u32(current_task ? current_task->kernel_stack : 0);
+    serial_write_char('\n');
+    if (tpid < 0) serial_write_str("launch: TASK CREATE FAILED\n");
     if (current_task) current_task->state = TASK_RUNNING;
 
     int ac = args ? count_args(args) : 0;
     enter_user_mode(USER_LOAD_ADDR, USER_STACK_TOP, user_pd, ac, args);
 
+    /* 本任务无父进程 (孤儿): 退出走 task_do_exit 的 orphan 分支跳回此处。
+       必须就地回收 — 否则 task_struct / 内核栈 / 页目录全部泄漏, 且
+       current_task 悬空指向 DEAD 任务, 下一次 task_create_user 会把
+       它当成父进程 (pid != 0) → 新任务退出走父进程分支 → 就绪队列空
+       → schedule 落入 hlt 死循环。 */
+    task_cleanup_user();
     __asm__ volatile("sti");
     shell_redraw();
     gfx_putc('\n');
@@ -159,6 +194,12 @@ static int load_elf_binary(const char *path, const char *args) {
     /* Map from the lowest segment vaddr up through max_vaddr + stack */
     u32 load_base = USER_LOAD_ADDR;
     u32 total_size = max_vaddr - load_base;
+    /* 段 + .bss 不得侵入用户栈区 (ELF 的 p_memsz 已含 .bss) */
+    if (total_size > USER_STACK_TOP - USER_STACK_SZ - load_base) {
+        delete user_pd;
+        fail("elf: program too large");
+        return -1;
+    }
     if (total_size > 0)
         map_user_pages(user_pd, load_base, total_size);
     map_user_pages(user_pd, USER_STACK_TOP - USER_STACK_SZ, USER_STACK_SZ);
@@ -170,6 +211,8 @@ static int load_elf_binary(const char *path, const char *args) {
     int ac = args ? count_args(args) : 0;
     enter_user_mode(entry, USER_STACK_TOP, user_pd, ac, args);
 
+    /* 孤儿任务就地回收 (同 load_flat_binary) */
+    task_cleanup_user();
     __asm__ volatile("sti");
     shell_redraw();
     gfx_putc('\n');

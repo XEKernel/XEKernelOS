@@ -69,6 +69,10 @@ private:
     void draw_char(int sx, int sy, char c, u8 fg, u8 bg);
     void scroll();
     const unsigned char *font_cn_lookup(u16 cp);
+    /* 像素读写 (按 bpp 选择粒度) — 光标保存/异或必须在 24bpp 模式下
+       也正确, 旧实现写死 4 字节/像素 (仅 32bpp 成立) */
+    u32  px_get(int off) const;
+    void px_set(int off, u32 c);
     void draw_cn_char(int sx, int sy, u16 cp, u8 fg, u8 bg);
 
 public:

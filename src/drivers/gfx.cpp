@@ -309,8 +309,7 @@ void GfxDriver::mcursor_restore() {
         for (int x = 0; x < cur_w_; x++) {
             int fx = cur_x_ + x;
             if (fx < 0 || fx >= w_) continue;
-            int off = fy * pitch_ + fx * 4;
-            *(u32 *)(fb_ + off) = cur_save_[y * cur_w_ + x];
+            px_set(fy * pitch_ + fx * (bpp_ / 8), cur_save_[y * cur_w_ + x]);
         }
     }
 }
@@ -330,9 +329,9 @@ void GfxDriver::mcursor_draw() {
         int fy = cur_y_ + y;
         for (int x = 0; x < 8; x++) {
             int fx = cur_x_ + x;
-            int off = fy * pitch_ + fx * 4;
-            cur_save_[y * 8 + x] = *(u32 *)(fb_ + off);
-            *(u32 *)(fb_ + off) = 0x00FF0000;
+            int off = fy * pitch_ + fx * (bpp_ / 8);
+            cur_save_[y * 8 + x] = px_get(off);
+            px_set(off, 0x00FF0000);
         }
     }
 }
@@ -351,8 +350,8 @@ void GfxDriver::mcursor_update() {
                 if (x > 0 && x < 7 && y > 0 && y < 7) continue; /* hollow */
                 int fx = old_x + x;
                 if (fx < 0 || fx >= w_) continue;
-                int off = fy * pitch_ + fx * 4;
-                *(u32 *)(fb_ + off) ^= 0x00FFFFFF;  /* XOR white */
+                int off = fy * pitch_ + fx * (bpp_ / 8);
+                px_set(off, px_get(off) ^ 0x00FFFFFF);  /* XOR white */
             }
         }
     }
@@ -371,8 +370,23 @@ void GfxDriver::mcursor_update() {
         for (int x = 0; x < 8; x++) {
             if (x > 0 && x < 7 && y > 0 && y < 7) continue;
             int fx = cur_x_ + x;
-            int off = fy * pitch_ + fx * 4;
-            *(u32 *)(fb_ + off) ^= 0x00FFFFFF;
+            int off = fy * pitch_ + fx * (bpp_ / 8);
+            px_set(off, px_get(off) ^ 0x00FFFFFF);
         }
     }
+}
+
+/* 单像素读写: 32bpp 走 u32, 24bpp 按字节 (与 set_pixel/fill_rect 一致) */
+u32 GfxDriver::px_get(int off) const {
+    if (bpp_ == 32) return *(u32 *)(fb_ + off);
+    u32 c = (u32)fb_[off] | ((u32)fb_[off + 1] << 8);
+    if (bpp_ >= 24) c |= (u32)fb_[off + 2] << 16;
+    return c;
+}
+
+void GfxDriver::px_set(int off, u32 c) {
+    if (bpp_ == 32) { *(u32 *)(fb_ + off) = c; return; }
+    fb_[off]     = c & 0xFF;
+    fb_[off + 1] = (c >> 8) & 0xFF;
+    if (bpp_ >= 24) fb_[off + 2] = (c >> 16) & 0xFF;
 }

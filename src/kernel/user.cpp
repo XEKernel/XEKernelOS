@@ -21,6 +21,9 @@ void user_init(void) {
     for (int i = 0; i < 104; i++) tss[i] = 0;
     *(u32 *)(tss + 4)  = 0x9F000;
     *(u32 *)(tss + 8)  = 0x10;
+    /* I/O 位图基址必须 >= TSS 限制(103) 才表示"禁止 ring3 端口 I/O";
+       置 0 会被解释成"位图从 TSS 偏移 0 开始", 属于未定义摆法 */
+    *(u16 *)(tss + 102) = 104;
 
     struct { u16 limit; u32 base; } __attribute__((packed)) gdtr;
     __asm__ volatile("sgdt %0" : "=m"(gdtr));
@@ -55,7 +58,22 @@ void enter_user_mode(u32 entry, u32 stack_top, PagingManager *pd,
 
     /* 每任务独立内核栈 */
     if (current_task && current_task->kernel_stack)
-        user_tss_set_esp0(current_task->kernel_stack + 4096);
+        user_tss_set_esp0(current_task->kernel_stack + KSTACK_SIZE);
+    else
+        serial_write_str("enter_user: WARN no kernel stack (TSS ESP0 stale!\n");
+
+    /* 进 ring3 前的现场记录: 若紧跟其后 triple fault, 这几行就是最后线索 */
+    serial_write_str("enter_user: cr3=0x");
+    { u32 cr3; __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+      serial_write_u32(cr3); }
+    serial_write_str(" esp0=0x");
+    serial_write_u32(current_task && current_task->kernel_stack
+                     ? current_task->kernel_stack + KSTACK_SIZE : 0);
+    serial_write_str(" entry=0x");
+    serial_write_u32(entry);
+    serial_write_str(" ustack=0x");
+    serial_write_u32(stack_top);
+    serial_write_char('\n');
 
     if (argc > 0 && g_user_args[0]) {
         /* 把参数字符串本体先拷到用户栈顶下方, 再压 argv 指针数组。

@@ -31,6 +31,7 @@ void *kmalloc(u32 size) {
     if (needed < HEADER_SIZE + 16) needed = HEADER_SIZE + 16;
     header_t *cur = (header_t *)_heap_start;
     while (cur) {
+        /* 块链被越界写破坏时立即失败, 而不是把坏块当空闲块分配出去 */
         if (cur->magic != HEAP_MAGIC) return 0;
         if (!cur->used && cur->size >= needed) {
             if (cur->size >= needed + HEADER_SIZE + 16) {

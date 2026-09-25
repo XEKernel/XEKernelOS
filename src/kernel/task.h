@@ -12,6 +12,18 @@ enum task_state {
 
 class PagingManager;  /* forward declaration */
 
+/* 每个任务的内核栈大小。必须是 4096 的倍数 (页对齐, TSS ESP0 用栈顶)。
+   原为 4KB — 实测 syscall 48 (SYS_VFS_DIR → fat.dir → read_root_sec →
+   bc_read) 的调用链已溢出几个字节, 溢出的字落在本块 kmalloc 头部的
+   magic 字段上, 破坏堆块链 → 之后每次 kmalloc 都失败 (open: e4)。
+   8KB 留足余量。 */
+#define KSTACK_SIZE 8192
+
+/* 抢占式调度时间片 (PIT tick 数, 100Hz → 4 tick = 40ms)。
+   时间片耗尽时 PIT 会抢占 ring3 任务并轮转到下一个同优先级任务,
+   纯计算死循环 (不发起 syscall) 无法再饿死 GUI/其他任务。 */
+#define TASK_QUANTUM 4
+
 /* ---- 准则四：Capability Tokens ---- */
 #define CAP_DISK_READ    (1 << 0)
 #define CAP_DISK_WRITE   (1 << 1)
@@ -52,6 +64,7 @@ struct task_struct {
     u8   dynamic_boost;   /* temporary boost from IRQ interaction */
     u32  boost_expire;    /* tick count when boost decays */
     u32  wake_tick;       /* >0: sys_sleep 到期 tick (PIT 唤醒) */
+    u32  quantum;         /* 剩余时间片 (PIT tick), 0 → 抢占轮转 */
 
     /* ---- 准则四：Capability Tokens ---- */
     u32  caps;            /* capability bitmask */
@@ -82,6 +95,15 @@ struct task_struct {
 #define SIG_DFL   0   /* default action */
 #define SIG_IGN   1   /* ignore */
 
+/* ---- 任务管理器快照 (SYS_TASK_LIST) ---- */
+struct task_info {
+    u32 pid;
+    u32 state;      /* task_state: 0=RUNNING 1=READY 2=BLOCKED 3=DEAD */
+    u32 priority;   /* priority + dynamic_boost */
+    u32 ring3;      /* 1 = 用户态任务 */
+};
+#define TASK_INFO_MAX 32
+
 extern struct list_head ready_queue;
 extern struct list_head all_tasks;    /* 全部任务 (含 BLOCKED/运行中) — 信号/能力查询用 */
 extern struct task_struct *current_task;
@@ -101,6 +123,9 @@ void task_check_signals(registers_t *r);
 /* 统一退出路径: 置 DEAD + 唤醒 waitpid 父进程 + 孤儿则跳回 shell 重启循环。
    SYS_EXIT 与信号杀死共用 — 修 shell_recover 复用死亡任务内核栈的 UAF */
 void task_do_exit(registers_t *r, u32 exit_code);
+
+/* 任务快照 (任务管理器用): 写入 out[], 返回条目数 (<= max) */
+int  task_snapshot(struct task_info *out, int max);
 
 /* Capability management (准则四) */
 void task_boost_priority(u32 pid, u8 amount);  /* IRQ-triggered boost (准则三) */

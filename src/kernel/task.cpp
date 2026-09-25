@@ -45,6 +45,20 @@ void task_init(void) {
     main_task->parent = nullptr;
     main_task->exit_code = 0;
     main_task->caps = CAP_ALL;  /* kernel shell has all privileges */
+    /* fd 表必须显式初始化: kmalloc 不做清零, 而"物理 RAM 非全零"的宿主
+       (VMware) 会让未初始化字段带上上电残留 → 被当作已打开的 fd 使用 */
+    main_task->output_fd = -1;
+    main_task->eip = 0; main_task->esp = 0; main_task->eflags = 0x202;
+    for (int i = 0; i < MAX_FD; i++) {
+        main_task->fd_buf[i] = nullptr; main_task->fd_size[i] = 0;
+        main_task->fd_pos[i] = 0; main_task->fd_type[i] = 0;
+    }
+    for (int i = 0; i < 32; i++) main_task->sig_handlers[i] = 0;
+    main_task->pending_signals = 0; main_task->blocked_signals = 0;
+    main_task->sig_saved_eip = 0; main_task->sig_saved_esp = 0;
+    main_task->priority = 128; main_task->dynamic_boost = 0;
+    main_task->boost_expire = 0; main_task->wake_tick = 0;
+    main_task->quantum = TASK_QUANTUM;
     list_init(&main_task->children);
     list_add_tail(&main_task->all_list, &all_tasks);
     current_task = main_task;
@@ -54,11 +68,11 @@ int task_create(void (*entry)(void *), void *arg) {
     struct task_struct *t = (task_struct *)kmalloc(sizeof(struct task_struct));
     if (!t) return -1;
 
-    u32 *stack = (u32 *)kmalloc(4096);
+    u32 *stack = (u32 *)kmalloc(KSTACK_SIZE);
     if (!stack) { kfree(t); return -1; }
-    for (int i = 0; i < 1024; i++) stack[i] = 0xCCCCCCCC;
+    for (u32 i = 0; i < KSTACK_SIZE / 4; i++) stack[i] = 0xCCCCCCCC;
 
-    u32 *sp = stack + 1024;
+    u32 *sp = stack + KSTACK_SIZE / 4;
 
     *(--sp) = 0x202;             // eflags
     *(--sp) = 0x18;              // cs (kernel code selector)
@@ -102,6 +116,7 @@ int task_create(void (*entry)(void *), void *arg) {
     t->dynamic_boost = 0;
     t->boost_expire = 0;
     t->wake_tick = 0;
+    t->quantum = TASK_QUANTUM;
     t->caps = CAP_ALL;
     t->output_fd = -1;
     for (int i = 0; i < MAX_FD; i++) {
@@ -118,14 +133,14 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     struct task_struct *t = (task_struct *)kmalloc(sizeof(struct task_struct));
     if (!t) return -1;
 
-    u32 *kstack = (u32 *)kmalloc(4096);
+    u32 *kstack = (u32 *)kmalloc(KSTACK_SIZE);
     if (!kstack) { kfree(t); return -1; }
-    for (int i = 0; i < 1024; i++) kstack[i] = 0xCCCCCCCC;
+    for (u32 i = 0; i < KSTACK_SIZE / 4; i++) kstack[i] = 0xCCCCCCCC;
 
     /* The kernel stack top: when entering from ring3 via interrupt,
        the CPU pushes SS, ESP, EFLAGS, CS, EIP onto this stack.
        We set ESP0 in the TSS to point here. */
-    u32 *sp = kstack + 1024;
+    u32 *sp = kstack + KSTACK_SIZE / 4;
 
     /* Build initial interrupt frame for returning to user mode via iretd.
        The frame format from top to bottom:
@@ -176,6 +191,7 @@ int task_create_user(void *entry, u32 user_stack_top, PagingManager *user_pd) {
     t->dynamic_boost = 0;
     t->boost_expire = 0;
     t->wake_tick = 0;
+    t->quantum = TASK_QUANTUM;
     t->caps = (current_task ? current_task->caps : CAP_ALL); /* 准则四: inherit */
     t->output_fd = -1;
     for (int i = 0; i < MAX_FD; i++) {
@@ -206,7 +222,7 @@ void task_start_user(void) {
     __asm__ volatile("movb $'>', %%al; movw $0x3F8, %%dx; outb %%al, %%dx" ::: "dx","al");
 
     /* Build the ring-3 iret frame on the kernel stack */
-    u32 *sp = (u32 *)(current_task->kernel_stack + 4096);
+    u32 *sp = (u32 *)(current_task->kernel_stack + KSTACK_SIZE);
     *(--sp) = 0x23;                        // SS (user data)
     *(--sp) = current_task->user_stack;    // ESP
     *(--sp) = 0x002;                       // EFLAGS (IF=0, no hw interrupts)
@@ -385,7 +401,11 @@ void schedule(registers_t *r) {
         /* 有任务被唤醒入队 → 落入下方正常挑选 */
     }
 
-    /* ---- 准则三: O(1) dynamic priority pick ---- */
+    /* ---- 准则三: O(1) dynamic priority pick ----
+       取队首第一个最高优先级项 (用 > 而非 >=):
+       时间片耗尽的 current 刚被 list_add_tail 塞到队尾,
+       同优先级下必须轮到队首那个任务 — 否则永远选中自己,
+       抢占式调度退化成"只重入不切换"。 */
     struct list_head *pos;
     struct task_struct *nt = nullptr;
     u8 best_prio = 0;
@@ -394,7 +414,7 @@ void schedule(registers_t *r) {
         struct task_struct *t = container_of(pos, struct task_struct, list);
         u8 eff = t->priority + t->dynamic_boost;
         if (eff > 255) eff = 255;
-        if (eff >= best_prio) {  /* >= gives fairness among equals */
+        if (eff > best_prio) {
             best_prio = eff;
             nt = t;
         }
@@ -404,6 +424,7 @@ void schedule(registers_t *r) {
 
     list_del(&nt->list);
     nt->state = TASK_RUNNING;
+    nt->quantum = TASK_QUANTUM;   /* 新获得 CPU 的任务重置时间片 */
 
     /* 仅在真正切换任务时输出 (sys_sleep 的 tick 级自切换不打印) */
     if (nt->pid != current_task->pid) {
@@ -434,7 +455,7 @@ void schedule(registers_t *r) {
        父进程的 ESP0 (旧任务内核栈顶) → 两个任务共用同一内核栈
        → 栈互相覆盖, 触发#DF/#PF 崩溃. */
     if (nt->kernel_stack)
-        user_tss_set_esp0(nt->kernel_stack + 4096);
+        user_tss_set_esp0(nt->kernel_stack + KSTACK_SIZE);
 
     /* Restore context (EIP restored AFTER CR3) */
     r->ecx = nt->ecx;
@@ -602,8 +623,11 @@ void task_check_signals(registers_t *r) {
 
         u32 handler = current_task->sig_handlers[sig];
 
-        /* SIGKILL and SIGSEGV with default handler → kill process */
-        if (handler == SIG_DFL && (sig == SIGKILL || sig == SIGSEGV)) {
+        /* 默认动作 = 终止的信号: SIGKILL/SIGSEGV/SIGINT/SIGTERM。
+           SIGINT 必须在此终止 — 旧实现把 SIG_DFL 一律 continue,
+           Ctrl+C 被静默忽略 (实测: 死循环任务无法用 Ctrl+C 结束) */
+        if (handler == SIG_DFL && (sig == SIGKILL || sig == SIGSEGV ||
+                                   sig == SIGINT  || sig == SIGTERM)) {
             serial_write_str("signal: killing pid ");
             serial_write_char('0' + (current_task->pid / 10) % 10);
             serial_write_char('0' + current_task->pid % 10);
@@ -697,4 +721,27 @@ void task_boost_priority(u32 pid, u8 amount) {
             return;
         }
     }
+}
+
+/* ---- 任务管理器快照 ---- */
+
+int task_snapshot(struct task_info *out, int max) {
+    if (!out || max <= 0) return 0;
+    if (max > TASK_INFO_MAX) max = TASK_INFO_MAX;
+
+    int n = 0;
+    struct list_head *pos;
+    list_for_each(pos, &all_tasks) {
+        if (n >= max) break;
+        struct task_struct *t = container_of(pos, struct task_struct, all_list);
+        if (t->state == TASK_DEAD) continue;
+        u32 eff = (u32)t->priority + t->dynamic_boost;
+        if (eff > 255) eff = 255;
+        out[n].pid      = t->pid;
+        out[n].state    = t->state;
+        out[n].priority = eff;
+        out[n].ring3    = (t->cs & 3) ? 1 : 0;
+        n++;
+    }
+    return n;
 }

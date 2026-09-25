@@ -400,7 +400,7 @@ static void sys_fork(registers_t *r) {
     }
 
     task_struct *child = (task_struct *)kmalloc(sizeof(task_struct));
-    u32 *kstack = (u32 *)kmalloc(4096);
+    u32 *kstack = (u32 *)kmalloc(KSTACK_SIZE);
     if (!child || !kstack) {
         if (child)   kfree(child);
         if (kstack)  kfree(kstack);
@@ -437,6 +437,7 @@ static void sys_fork(registers_t *r) {
     child->dynamic_boost = 0;
     child->boost_expire = 0;
     child->wake_tick = 0;
+    child->quantum = TASK_QUANTUM;
     for (int i = 0; i < MAX_FD; i++) {
         child->fd_size[i] = current_task->fd_size[i];
         child->fd_pos[i]  = current_task->fd_pos[i];
@@ -477,8 +478,8 @@ static void sys_fork(registers_t *r) {
     list_add_tail(&child->all_list, &all_tasks);
 
     /* Copy kernel stack frame to child */
-    u32 *psp = (u32 *)(current_task->kernel_stack + 4096);
-    u32 *csp = (u32 *)(child->kernel_stack + 4096);
+    u32 *psp = (u32 *)(current_task->kernel_stack + KSTACK_SIZE);
+    u32 *csp = (u32 *)(child->kernel_stack + KSTACK_SIZE);
     int frame_words = (int)(psp - (u32 *)r);
     for (int i = 0; i < frame_words; i++)
         csp[-i - 1] = psp[-i - 1];
@@ -500,12 +501,16 @@ static void sys_fork(registers_t *r) {
       随机物理页 + 用户态 syscall 传指针 → 内核经 PSE 解引用读到旧镜像
    2) 先完整构建新地址空间再切换 — 旧实现先 delete 旧页目录,
       中途失败 (页表 OOM) 任务回到已销毁的地址空间 → #PF 崩溃
-   3) 0x400000~0x430000 物理区由 mm 统一预留, 不经 mm_alloc_page,
-      exec 不再产生不可回收的页 */
+   3) 0x400000~0x450000 物理区由 mm 统一预留 (loader 恒等映射路径用,
+      不经 mm_alloc_page), exec 自身只用 mm 私有页, 不产生不可回收的页 */
 static bool exec_replace_address_space(registers_t *r, const u8 *data, u32 sz) {
     u32 load_addr = 0x400000;
     u32 entry     = 0x400000;   /* 调试结束恢复正位 */
-    u32 stack_top = 0x420000;
+    /* 栈顶 0x440000 (与 loader/shell_launch_user 一致): 代码+.bss 区
+       可用 0x400000~0x430000。旧值 0x420000 只剩 128KB, 桌面
+       (代码 39KB + .bss 60KB) 的 wins 越界落进栈区 */
+    u32 stack_top = 0x440000;
+    u32 stack_base = stack_top - 0x10000;
 
     PagingManager *old_pd = current_task->paging;
     PagingManager *new_pd = new PagingManager();
@@ -519,13 +524,20 @@ static bool exec_replace_address_space(registers_t *r, const u8 *data, u32 sz) {
           mm 私有页经 track_owned 登记, 退出/失败随页目录统一释放 */
     u32 map_sz = (sz < 0x1000) ? 0x1000 : ((sz + 0xFFF) & ~0xFFFu);
     map_sz += 0x10000;   /* .bss 预留 64KB — 桌面等大全局数组需额外虚址 */
+    /* 代码+.bss 区不得与用户栈重叠: 重叠时栈生长会踩坏全局数组,
+       且拷贝循环会经 translate_user 把 .bss 数据写进栈物理页 */
+    if (map_sz > stack_base - load_addr) {
+        serial_write_str("exec: program too large\n");
+        delete new_pd;
+        return false;
+    }
     for (u32 off = 0; off < map_sz; off += 0x1000) {
         u32 pa = mm_alloc_page();
         if (!pa) { delete new_pd; return false; }
         new_pd->map_page(load_addr + off, pa, PT_FLAGS);
         new_pd->track_owned(pa);
     }
-    for (u32 va = stack_top - 0x10000; va < stack_top; va += 0x1000) {
+    for (u32 va = stack_base; va < stack_top; va += 0x1000) {
         u32 pa = mm_alloc_page();
         if (!pa) { delete new_pd; return false; }
         new_pd->map_page(va, pa, PT_FLAGS);
@@ -540,20 +552,26 @@ static bool exec_replace_address_space(registers_t *r, const u8 *data, u32 sz) {
 
     /* 校验映射确实建立 (OOM 时 map_page 静默返回) */
     if (!new_pd->translate_user(load_addr) ||
+        !new_pd->translate_user(load_addr + map_sz - 4) ||
         !new_pd->translate_user(stack_top - 4)) {
         delete new_pd;
         return false;
     }
 
     /* 2. 经内核 PSE 恒等映射写新物理页: 拷代码 + 清 .bss 尾部 + 清栈 —
-          此后不再有失败路径 */
+          此后不再有失败路径。chunk 必须先判 off < sz: 旧实现
+          `sz - off` 在 off > sz 时无符号下溢成巨值 → 越界读堆
+          (desktop: 越读 30KB) 并把垃圾写进 .bss 页 */
     for (u32 off = 0; off < map_sz; off += 0x1000) {
         u8 *d = (u8 *)new_pd->translate_user(load_addr + off);
-        u32 chunk = (sz - off > 0x1000) ? 0x1000 : (sz - off);
-        for (u32 k = 0; k < chunk; k++) d[k] = data[off + k];
+        u32 chunk = 0;
+        if (off < sz) {
+            chunk = (sz - off > 0x1000) ? 0x1000 : (sz - off);
+            for (u32 k = 0; k < chunk; k++) d[k] = data[off + k];
+        }
         for (u32 k = chunk; k < 0x1000; k++) d[k] = 0;
     }
-    for (u32 va = stack_top - 0x10000; va < stack_top; va += 0x1000) {
+    for (u32 va = stack_base; va < stack_top; va += 0x1000) {
         u8 *d = (u8 *)new_pd->translate_user(va);
         for (u32 k = 0; k < 0x1000; k++) d[k] = 0;
     }
@@ -570,7 +588,7 @@ static bool exec_replace_address_space(registers_t *r, const u8 *data, u32 sz) {
     new_pd->load();
 
     /* 重建内核栈上的保存帧 (供后续 schedule 恢复) */
-    u32 *csp = (u32 *)(current_task->kernel_stack + 4096);
+    u32 *csp = (u32 *)(current_task->kernel_stack + KSTACK_SIZE);
     *(--csp) = 0x23;         /* SS */
     *(--csp) = stack_top;    /* ESP */
     *(--csp) = 0x202;        /* EFLAGS */
@@ -1140,6 +1158,19 @@ void syscall_cleanup_fds(task_struct *t) {
 }
 
 extern "C" void syscall_handler(registers_t *r) {
+    /* 诊断: 记录 ring3 任务最早几次系统调用 — 用于定位"切到用户态即
+       triple fault"这类问题 (能打印出来就说明 ring3 已经真正跑起来) */
+    if (r->cs & 3) {
+        static int n = 0;
+        if (n < 6) {
+            n++;
+            serial_write_str("ring3 sys=");
+            serial_write_u32(r->eax);
+            serial_write_str(" pid=");
+            serial_write_u32(current_task ? current_task->pid : 0);
+            serial_write_char('\n');
+        }
+    }
 
     switch (r->eax) {
     case SYS_WRITE: sys_write(r); break;
@@ -1307,6 +1338,19 @@ extern "C" void syscall_handler(registers_t *r) {
         r->eax = mm_free_count();
         r->ebx = mm_total_pages();
         break;
+    case SYS_TASK_LIST: {
+        /* ebx=task_info[] 用户缓冲, ecx=max 条目数 */
+        u32 ubuf = r->ebx;
+        u32 max  = r->ecx;
+        if (max == 0 || max > TASK_INFO_MAX) { r->eax = (u32)-1; break; }
+        struct task_info buf[TASK_INFO_MAX];
+        int n = task_snapshot(buf, (int)max);
+        if (n > 0 && !copy_to_user(ubuf, buf, (u32)n * sizeof(struct task_info))) {
+            r->eax = (u32)-1; break;
+        }
+        r->eax = (u32)n;
+        break;
+    }
     default:
         r->eax = (u32)-1;
         break;

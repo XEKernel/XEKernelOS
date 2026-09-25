@@ -51,6 +51,7 @@
 #define SYS_VFS_DIR    48   /* VFS directory listing: ebx=path */
 #define SYS_MEMINFO    49   /* memory info: eax=free_pages ebx=total_pages */
 #define SYS_VFS_LIST   50   /* 结构化目录列表: ebx=path ecx=DirEntry[] edx=max */
+#define SYS_TASK_LIST  51   /* 任务快照: ebx=task_info[] ecx=max → eax=条目数 */
 
 /* ioctl commands for fd type 4 (framebuffer) */
 #define IOCTL_GFX_SET_FG  1

@@ -68,6 +68,13 @@ if os.path.exists(desktop_bin):
 else:
     print(f"Warning: {desktop_bin} not found, skipping")
 
+# Preemption / signal test program
+spin_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'spin.bin')
+if os.path.exists(spin_bin):
+    add_binary("SPIN    BIN", spin_bin)
+else:
+    print(f"Warning: {spin_bin} not found, skipping")
+
 # User shell as launchable program (GUI Terminal icon)
 ushell_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'ushell.bin')
 if os.path.exists(ushell_bin):

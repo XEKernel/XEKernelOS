@@ -62,8 +62,6 @@ extern "C" void c_isr_handler(registers_t *r) {
                 task_send_signal(current_task->pid, SIGINT);
             }
         }
-        if (current_task && current_task->pid != 0)
-            task_boost_priority(current_task->pid, 1);
         /* Mouse cursor update — safe in both kernel and user mode:
            all text output from ring3 goes through int 0x80 syscalls,
            whose interrupt gate (flags 0xEE) clears IF, so PIT cannot
@@ -71,17 +69,27 @@ extern "C" void c_isr_handler(registers_t *r) {
            are mutually exclusive. */
         gfx.mcursor_update();
 
-        /* Only reschedule when NOT in ring3 — ring3 tasks have a separate
-           kernel stack and schedule() would corrupt their context by saving
-           the PIT frame instead of the syscall frame.
-           且仅当 current 处于 RUNNING: sys_sleep 后任务 BLOCKED,
-           schedule 在空队列的 sti/hlt 循环里等唤醒 — 此时 PIT 的
-           ISR 若再调 schedule, 会把 ISR 内核帧 (eip=hlt循环, cs=0x18)
-           二次保存进任务, 覆盖 sys_sleep 已存好的用户态上下文,
-           任务被恢复成"内核态 hlt"永远回不去 ring3 (实测: GUI
-           时钟冻结/ESC 失灵)。唤醒只需入队, 由外层循环挑选恢复。 */
-        if ((r->cs & 3) == 0 && current_task && current_task->state == TASK_RUNNING)
-            schedule(r);
+        /* 信号投递必须也走 PIT 返回路径: 纯计算死循环 (SPIN.BIN) 从不
+           发起 syscall, 而旧实现只在 syscall/异常返回路径调
+           task_check_signals → Ctrl+C/SIGKILL 对它完全失效。
+           SIG_DFL 的终止类信号会在此 task_do_exit (不返回)。 */
+        if (r->cs & 3) task_check_signals(r);
+
+        /* 抢占式调度: ring3 时间片耗尽 (TASK_QUANTUM tick) 即切换。
+           守卫 state==TASK_RUNNING: sys_sleep 后任务 BLOCKED, 其用户态
+           上下文已由 syscall 路径保存 — 此处再调 schedule 会把 PIT 的
+           ISR 帧二次保存进任务, 覆盖用户态上下文 (实测: 任务被恢复成
+           "内核态 hlt", 永远回不去 ring3 → GUI 冻结)。
+           ring0 内核帧保持旧行为 (每 tick 重调度)。 */
+        if (current_task && current_task->state == TASK_RUNNING) {
+            int preempt = 0;
+            if ((r->cs & 3) == 3 && current_task->pid != 0) {
+                if (current_task->quantum > 0) current_task->quantum--;
+                if (current_task->quantum == 0) preempt = 1;
+            }
+            if ((r->cs & 3) == 0 || preempt)
+                schedule(r);
+        }
         return;
     }
 

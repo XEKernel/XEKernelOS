@@ -82,6 +82,11 @@ SPIN_SRC = $(SRCDIR)/user/spin.cpp
 SPIN_ELF = $(BLDDIR)/spin.elf
 SPIN_BIN = $(BLDDIR)/spin.bin
 
+# LFN (long file name) read-path test program (flat binary)
+LFSTEST_SRC = $(SRCDIR)/user/lfstest.cpp
+LFSTEST_ELF = $(BLDDIR)/lfstest.elf
+LFSTEST_BIN = $(BLDDIR)/lfstest.bin
+
 CXXFLAGS = -target $(TARGET) -ffreestanding -nostdlib -Wall -Wextra -O1 \
            -fno-exceptions -fno-rtti -fno-use-cxa-atexit -std=c++17 \
            -mno-sse -mno-mmx -mno-sse2 -I $(SRCDIR)
@@ -102,7 +107,7 @@ USHELL_ELF   = $(BLDDIR)/ushell.elf
 USHELL_BIN   = $(BLDDIR)/ushell.bin
 USHELL_HDR   = $(SRCDIR)/user/ushell_blob.h
 
-all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG) $(DEMO_BIN) $(DESKTOP_BIN) $(SPIN_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN)
+all: $(IMG) $(HELLO_BIN) $(TEST_ELF) $(USHELL_HDR) $(FONT_BIN) $(DISK_IMG) $(DEMO_BIN) $(DESKTOP_BIN) $(SPIN_BIN) $(LFSTEST_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN)
 
 # ... existing targets ...
 
@@ -206,9 +211,18 @@ $(SPIN_BIN): $(SPIN_ELF)
 	$(OBJCOPY) -O binary $< $@
 	@echo "  Spin: $$(wc -c < $@)B"
 
+# LFN read-path test
+$(LFSTEST_ELF): $(LFSTEST_SRC) $(SRCDIR)/user/usys.h $(SRCDIR)/user/user.ld | $(BLDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR)/user -c $< -o $(BLDDIR)/lfstest.o
+	$(LD) $(LDFLAGS) -T $(SRCDIR)/user/user.ld $(BLDDIR)/lfstest.o -o $@
+
+$(LFSTEST_BIN): $(LFSTEST_ELF)
+	$(OBJCOPY) -O binary $< $@
+	@echo "  LFStest: $$(wc -c < $@)B"
+
 # Build FAT12 disk image with CJK font + ext2 injected
 DISK_SIZE = 4194304  # 4MB
-$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) $(DEMO_BIN) $(DESKTOP_BIN) $(SPIN_BIN) $(USHELL_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN) $(EXT2_IMG) tools/mkdisk.py
+$(DISK_IMG): $(HELLO_BIN) $(TEST_ELF) $(FONT_BIN) $(DEMO_BIN) $(DESKTOP_BIN) $(SPIN_BIN) $(LFSTEST_BIN) $(USHELL_BIN) $(GFXDEMO_BIN) $(BOUNCE_BIN) $(TESTGFX_BIN) $(EXT2_IMG) tools/mkdisk.py
 	python tools/mkdisk.py
 	@echo "Expanding disk to 4MB and injecting font at LBA 2048..."
 	@python -c "import os; sz=os.path.getsize('$@'); open('$@','ab').write(b'\x00'*($(DISK_SIZE)-sz)); f=open('$(FONT_BIN)','rb').read(); d=open('$@','r+b'); d.seek(2048*512); d.write(f); print(f'Font {len(f)}B injected')"

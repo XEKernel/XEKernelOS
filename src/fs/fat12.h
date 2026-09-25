@@ -32,7 +32,19 @@ private:
     u8   num_fat_ = 0;
     u16  root_ents_ = 0;
     u16  cur_dir_cluster_ = 0;
-    char cur_dir_name_[13]{};
+    char cur_dir_name_[160]{};   /* cwd 路径 (可含 LFN 中文名) */
+
+    /* ---- VFAT 长文件名 (LFN) 读取组装状态 ----
+       LFN 槽 (attr=0x0F) 连续排在短目录项之前, 物理顺序为
+       N|0x40, N-1, ..., 1; 每槽存 13 个 UTF-16 码元.
+       扫描目录时逐槽调用 lfn_absorb() 累积, 遇到短项时由
+       entry_name() 校验 checksum 并转成 UTF-8. */
+    u16  lfn_u16_[260]{};      /* 组装中的 UTF-16 名 (最多 255 字符) */
+    int  lfn_chars_ = 0;       /* 有效 UTF-16 码元数 */
+    u8   lfn_total_ = 0;       /* 本序列的槽数 (来自 0x40 首槽) */
+    u8   lfn_cksum_ = 0;       /* 首槽记录的短名校验和 */
+    bool lfn_have_ = false;
+    bool lfn_ok_ = false;
 
     int  curdir_secs();
     int  read_curdir(int sec_idx);
@@ -44,6 +56,12 @@ private:
     int  write_root_sec(int sector, u8 *src);
     void name83_to_str(u8 *e, char *name);
     void str_to_name83(const char *name, u8 *fname);
+
+    /* LFN 读侧 */
+    void scan_reset();                                  /* 每个扫描循环开始前调用 */
+    int  lfn_absorb(u8 *e);                             /* 1 = LFN 槽, 调用方 continue */
+    void entry_name(u8 *e, char *out, int max);          /* 长名优先, 否则 8.3 */
+    int  entry_match(u8 *e, const char *want);           /* 长名或短名任一命中 */
 };
 
 extern FatFilesystem fat;

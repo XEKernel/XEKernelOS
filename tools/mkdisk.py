@@ -24,6 +24,9 @@ ROOT_SECTORS = DATA_SEC - ROOT_SEC                   # 14
 # Demo files: (8.3 name, content_bytes)
 DEMO_FILES = []
 
+# 长文件名文件: (长名 UTF-8, 8.3 短名 11 字节 ASCII, 内容) → 额外生成 LFN 槽
+LONG_FILES = []
+
 def add_text(name_83, text):
     DEMO_FILES.append((name_83, text.encode('utf-8')))
 
@@ -31,9 +34,18 @@ def add_binary(name_83, path):
     with open(path, 'rb') as f:
         DEMO_FILES.append((name_83, f.read()))
 
+def add_text_long(long_name, name_83, text):
+    LONG_FILES.append((long_name, name_83, text.encode('utf-8')))
+
 add_text("README  TXT", "欢迎使用 XEKernelOS！\n\n这是一个示例文件。\n你可以用 CAT README.TXT 查看我。\n")
 add_text("HELLO   TXT", "Hello from XEKernelOS!\n\n系统基于 x86 32 位保护模式。\n支持 FAT12 文件系统。\n")
 add_text("DEMO    TXT", "XEKernelOS 演示文件\n==================\n\n创建文件: CREATE test.txt 内容\n查看文件: CAT test.txt\n删除文件: RM test.txt\n复制文件: CP a.txt b.txt\n重命名:   MV old.txt new.txt\n创建目录: MKDIR mydir\n删除目录: RMDIR mydir\n\n祝你使用愉快！\n")
+
+# 长文件名 / 中文名 (VFAT LFN) — 供 LFSTEST.BIN 与文件管理器验证读侧 LFN
+add_text_long("中文文档.txt", "ZHWDOC~1TXT",
+              "XEK-LFN-CONTENT-OK 这是中文长文件名的正文。\n")
+add_text_long("LongFileName.txt", "LONGFI~1TXT",
+              "XEK-LFN-LONGNAME-OK long file name body.\n")
 
 # Batch script demo
 script_dir = os.path.dirname(__file__)
@@ -75,6 +87,13 @@ if os.path.exists(spin_bin):
 else:
     print(f"Warning: {spin_bin} not found, skipping")
 
+# LFN read-path test program
+lfstest_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'lfstest.bin')
+if os.path.exists(lfstest_bin):
+    add_binary("LFSTEST BIN", lfstest_bin)
+else:
+    print(f"Warning: {lfstest_bin} not found, skipping")
+
 # User shell as launchable program (GUI Terminal icon)
 ushell_bin = os.path.join(os.path.dirname(__file__), '..', 'build', 'ushell.bin')
 if os.path.exists(ushell_bin):
@@ -105,6 +124,40 @@ def name_to_83(name_str):
         if i < 11:
             b[i] = ord(ch)
     return bytes(b)
+
+
+def lfn_checksum(short83):
+    """短名 11 字节 → LFN 校验和 (微软规范)."""
+    s = 0
+    for b in short83:
+        s = (((s & 1) << 7) + (s >> 1) + b) & 0xFF
+    return s
+
+
+LFN_CHAR_OFFS = (1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30)
+
+def make_lfn_slots(long_name, short83):
+    """长名 → LFN 目录项列表 (物理顺序: N|0x40, N-1, ..., 1)."""
+    raw = long_name.encode('utf-16-le')
+    chars = [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)]
+    n = (len(chars) + 12) // 13
+    if n > 20:
+        raise ValueError(f'长名过长: {long_name}')
+    cksum = lfn_checksum(short83)
+    slots = []
+    for i in range(n, 0, -1):                 # 物理顺序从高序号开始
+        chunk = chars[(i - 1) * 13: i * 13]
+        chunk = chunk + [0x0000] * (13 - len(chunk))
+        e = bytearray(32)
+        e[0] = i | (0x40 if i == n else 0)
+        e[11] = 0x0F                          # LFN 属性
+        e[12] = 0
+        e[13] = cksum
+        struct.pack_into('<H', e, 26, 0)      # 簇号必须为 0
+        for k, ch in enumerate(chunk):
+            struct.pack_into('<H', e, LFN_CHAR_OFFS[k], ch)
+        slots.append(bytes(e))
+    return slots
 
 
 def build_disk(output_path):
@@ -163,8 +216,15 @@ def build_disk(output_path):
             fat[off] = value & 0xFF
             fat[off + 1] = (fat[off + 1] & 0xF0) | ((value >> 8) & 0x0F)
 
+    # 统一写入序列: 普通文件 = [8.3 项]; 长名文件 = [LFN 槽..., 8.3 项]
+    groups = []
     for name_str, content_bytes in DEMO_FILES:
-        name_bytes = name_to_83(name_str)
+        groups.append(([name_to_83(name_str)], content_bytes))
+    for long_name, name_83, content_bytes in LONG_FILES:
+        s83 = name_to_83(name_83)
+        groups.append((make_lfn_slots(long_name, s83) + [s83], content_bytes))
+
+    for entries, content_bytes in groups:
         size = len(content_bytes)
 
         # Number of clusters needed
@@ -190,7 +250,14 @@ def build_disk(output_path):
             chunk = content_bytes[off: off + cluster_size]
             img[data_base + cl_off: data_base + cl_off + len(chunk)] = chunk
 
+        # LFN 槽 (在短目录项之前, 物理顺序)
+        for lfn in entries[:-1]:
+            off = dir_entry_idx * 32
+            dir_entry_idx += 1
+            root_dir[off: off + 32] = lfn
+
         # Create root directory entry
+        name_bytes = entries[-1]
         entry_offset = dir_entry_idx * 32
         dir_entry_idx += 1
         entry = bytearray(32)
@@ -220,6 +287,8 @@ def build_disk(output_path):
         ext = s[8:].rstrip() if len(s) > 8 else ''
         display = name + (('.' + ext) if ext else '')
         print(f"  {display:20s} {len(content_bytes)} bytes")
+    for long_name, name_83, content_bytes in LONG_FILES:
+        print(f"  {long_name:20s} {len(content_bytes)} bytes  (LFN, 短名 {name_83.strip()})")
 
 
 if __name__ == '__main__':

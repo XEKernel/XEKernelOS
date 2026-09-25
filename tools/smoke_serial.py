@@ -35,6 +35,8 @@ CMDS = [
     'ECHO W',          # 双保险: 屏幕应继续变化
     'RUN SPIN.BIN',    # 抢占式调度: 父进程纯死循环 + 子进程心跳打印
     'ECHO KILLOK',     # Ctrl+C 终止自旋进程后 Shell 必须恢复
+    'RUN LFSTEST.BIN', # 长文件名 (LFN) 读侧: 列目录 + 长名/短名打开
+    'ECHO L',
 ]
 
 def log(s): print(s, flush=True)
@@ -347,6 +349,27 @@ def main():
         else:
             log(f'OK: 抢占式调度 (SPIN 子进程 tick={n_tick}) + Ctrl+C(SIGINT) '
                 f'终止自旋进程 + Shell 恢复 + SYS_TASK_LIST 可用')
+
+        # ---- M2: VFAT 长文件名 (LFN) 读侧 ----
+        i_lfs   = serial.find('LFSTEST: list')
+        i_done2 = serial.find('LFSTEST: done')
+        i_long  = serial.find('中文文档.txt')
+        i_body  = serial.find('XEK-LFN-CONTENT-OK')
+        i_short = serial.find('LFSTEST: short-body')
+        i_lread = serial.find('LFSTEST: read=')
+        long_ok = i_lread >= 0 and i_lread + 15 < len(serial) and serial[i_lread:i_lread+22].find('read=-') < 0
+        if i_lfs < 0 or i_done2 < 0:
+            log('FAIL: LFSTEST.BIN 未跑完 (RUN LFSTEST.BIN 失败?)'); ok = False
+        elif i_long < 0:
+            log('FAIL: 目录列表未出现长名"中文文档.txt" — LFN 组装/UTF-16→UTF-8 失败')
+            ok = False
+        elif i_body < 0 or not long_ok:
+            log('FAIL: 用长名打开/读取失败 (read 行: '
+                f'{serial[i_lread:i_lread+24] if i_lread >= 0 else "缺失"})'); ok = False
+        elif i_short < 0:
+            log('FAIL: 8.3 短名回退打开失败 (LONGFI~1.TXT)'); ok = False
+        else:
+            log('OK: LFN 读侧 (长名/中文名列出 + 长名打开读正文 + 8.3 短名回退)')
 
         # ---- 先优雅退出 QEMU (quit 刷写缓存), 强杀仅兜底 ----
         try:

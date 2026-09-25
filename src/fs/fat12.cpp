@@ -88,6 +88,110 @@ void FatFilesystem::str_to_name83(const char *name, u8 *fname) {
     }
 }
 
+/* ---- VFAT 长文件名 (LFN) ---- */
+
+/* 短名 11 字节 → 校验和 (微软规范: 每字节先循环右移再加) */
+static u8 lfn_cksum_of(const u8 *short83) {
+    u8 sum = 0;
+    for (int i = 0; i < 11; i++)
+        sum = (u8)(((sum & 1) << 7) + (sum >> 1) + short83[i]);
+    return sum;
+}
+
+/* 大小写不敏感的显示名比较 (ASCII 折大小写; 非 ASCII 逐字节比) */
+static int name_match(const char *a, const char *b) {
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+void FatFilesystem::scan_reset() {
+    lfn_chars_ = 0; lfn_total_ = 0; lfn_cksum_ = 0;
+    lfn_have_ = false; lfn_ok_ = false;
+}
+
+int FatFilesystem::lfn_absorb(u8 *e) {
+    /* 删除/空闲槽会打断 LFN 序列 */
+    if (e[0] == 0xE5) { lfn_have_ = false; return 0; }
+    /* LFN 槽属性恰好 0x0F */
+    if ((e[11] & 0x3F) != 0x0F) return 0;
+
+    u8 seq = e[0] & 0x3F;
+    if (e[0] & 0x40) {                     /* 序列首槽 (含最后一段字符) */
+        lfn_total_ = seq;
+        lfn_cksum_ = e[13];
+        lfn_have_ = true;
+        lfn_ok_ = (seq >= 1 && seq <= 20);  /* 20 槽 × 13 = 260 上限 */
+        lfn_chars_ = 0;
+        for (int i = 0; i < 260; i++) lfn_u16_[i] = 0;
+    }
+    if (!lfn_have_ || !lfn_ok_ || seq < 1 || seq > lfn_total_) return 1;
+
+    static const u8 off[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
+    int base = (int)(seq - 1) * 13;
+    for (int i = 0; i < 13 && base + i < 260; i++)
+        lfn_u16_[base + i] = (u16)(e[off[i]] | (e[off[i] + 1] << 8));
+
+    if (seq == lfn_total_) {
+        /* 末段内含 0x0000 (或 0xFFFF) 结束符 → 确定实际长度 */
+        int end = (int)lfn_total_ * 13;
+        if (end > 260) end = 260;
+        for (int i = base; i < end; i++)
+            if (lfn_u16_[i] == 0 || lfn_u16_[i] == 0xFFFF) { end = i; break; }
+        lfn_chars_ = end;
+    }
+    return 1;
+}
+
+void FatFilesystem::entry_name(u8 *e, char *out, int max) {
+    /* checksum 不匹配 → 残片/错位 LFN, 回退 8.3 (删除/改名后遗留的
+       LFN 槽因此自动失效, 不会把旧名字贴到相邻目录项上) */
+    bool use_lfn = lfn_have_ && lfn_ok_ && lfn_chars_ > 0 &&
+                   lfn_cksum_ == lfn_cksum_of(e);
+    lfn_have_ = false;
+    if (!use_lfn || max < 8) { name83_to_str(e, out); return; }
+
+    int n = 0;
+    for (int i = 0; i < lfn_chars_ && n + 4 < max; i++) {
+        u32 cp = lfn_u16_[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < lfn_chars_ &&
+            lfn_u16_[i+1] >= 0xDC00 && lfn_u16_[i+1] <= 0xDFFF) {
+            cp = 0x10000 + (((u32)(cp - 0xD800)) << 10) + (lfn_u16_[i+1] - 0xDC00);
+            i++;
+        }
+        if (cp < 0x80) {
+            out[n++] = (char)cp;
+        } else if (cp < 0x800) {
+            out[n++] = (char)(0xC0 | (cp >> 6));
+            out[n++] = (char)(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out[n++] = (char)(0xE0 | (cp >> 12));
+            out[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            out[n++] = (char)(0x80 | (cp & 0x3F));
+        } else {
+            out[n++] = (char)(0xF0 | (cp >> 18));
+            out[n++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+            out[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            out[n++] = (char)(0x80 | (cp & 0x3F));
+        }
+    }
+    out[n] = 0;
+}
+
+int FatFilesystem::entry_match(u8 *e, const char *want) {
+    char disp[64];
+    entry_name(e, disp, sizeof(disp));
+    if (name_match(disp, want)) return 1;
+    char s83[13];                       /* 回退: 允许用短名 (XEK~1.TXT) 访问 */
+    name83_to_str(e, s83);
+    return name_match(s83, want);
+}
+
 int FatFilesystem::curdir_secs() {
     if (cur_dir_cluster_ == 0)
         return data_sec_ - root_secs_;
@@ -160,21 +264,18 @@ void FatFilesystem::set_cluster(u16 cluster, u16 value) {
 }
 
 int FatFilesystem::open(const char *name, u8 *out, u32 max_len) {
-    u8 fname[11];
-    str_to_name83(name, fname);
-
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
             if (e[11] & 0x10) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++) if (e[k] != fname[k]) { match = 0; break; }
-            if (!match) continue;
+            if (!entry_match(e, name)) continue;
 
             u16 cl = *(u16 *)(e + 26);
             u32 size = *(u32 *)(e + 28);
@@ -202,23 +303,23 @@ int FatFilesystem::open(const char *name, u8 *out, u32 max_len) {
 
 int FatFilesystem::write(const char *name, const u8 *data, u32 size) {
     u8 fname[11];
-    str_to_name83(name, fname);
+    str_to_name83(name, fname);     /* 8.3 短名 (M2b: 长名额外写 LFN 槽) */
 
     int maxs = curdir_secs();
     int free_entry = -1;
     int found = 0;
 
+    scan_reset();
     for (int s = 0; s < maxs && !found; s++) {
         if (read_curdir(s)) return -3;
         for (int j = 0; j < 512 && !found; j += 32) {
             u8 *e = buf_ + j;
             if (free_entry < 0 && (e[0] == 0xE5 || e[0] == 0)) free_entry = s * 512 + j;
             if (e[0] == 0) { found = 1; break; }
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++) if (e[k] != fname[k]) { match = 0; break; }
-            if (match) {
+            if (entry_match(e, name)) {
                 u16 cl = *(u16 *)(e + 26);
                 while (cl >= 2 && cl < 0xFF0) {
                     u16 next = next_cluster(cl);
@@ -277,20 +378,17 @@ int FatFilesystem::write(const char *name, const u8 *data, u32 size) {
 }
 
 int FatFilesystem::remove(const char *name) {
-    u8 fname[11];
-    str_to_name83(name, fname);
-
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) return -1;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++) if (e[k] != fname[k]) { match = 0; break; }
-            if (!match) continue;
+            if (!entry_match(e, name)) continue;
 
             u16 cl = *(u16 *)(e + 26);
             while (cl >= 2 && cl < 0xFF0) {
@@ -308,15 +406,17 @@ int FatFilesystem::remove(const char *name) {
 
 int FatFilesystem::dir() {
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return 0;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
-            char name[13];
-            name83_to_str(e, name);
+            char name[64];
+            entry_name(e, name, sizeof(name));
             if (e[11] & 0x10) {
                 gfx_set_fg(COLOR_LCYAN);
                 gfx_puts("DIR  ");
@@ -381,15 +481,17 @@ int FatFilesystem::list(const char * /*path*/, DirEntry *e, u32 max) {
     /* 结构化目录列表 — 资源管理器使用. FAT12 基于 cwd 导航, 忽略 path. */
     u32 n = 0;
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs && n < max; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *en = buf_ + j;
             if (en[0] == 0) return (int)n;
+            if (lfn_absorb(en)) continue;
             if (en[0] == 0xE5) continue;
             if (en[11] & 0x08) continue;
-            char name[13];
-            name83_to_str(en, name);
+            char name[64];
+            entry_name(en, name, sizeof(name));
             e[n].is_dir = (en[11] & 0x10) ? 1 : 0;
             e[n].size   = *(u32 *)(en + 28);   /* 文件大小 */
             int i = 0;
@@ -436,29 +538,34 @@ int FatFilesystem::cd(const char *name) {
 
     if (name[0] == '.' && name[1] == 0) return 0;
 
-    u8 fname[11];
-    str_to_name83(name, fname);
-
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
             if (!(e[11] & 0x10)) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++)
-                if (e[k] != fname[k]) { match = 0; break; }
-            if (!match) continue;
+            /* 显示名需保留 (用于拼接 cwd), 故不使用 entry_match */
+            char dname[64];
+            entry_name(e, dname, sizeof(dname));
+            if (!name_match(dname, name)) {
+                char s83[13];
+                name83_to_str(e, s83);
+                if (!name_match(s83, name)) continue;
+            }
             cur_dir_cluster_ = *(u16 *)(e + 26);
             /* Append subdirectory name to cur_dir_name_ */
             int n = 0;
             while (cur_dir_name_[n]) n++;
             if (n == 0) cur_dir_name_[n++] = '\\';
             else if (n > 0 && cur_dir_name_[n-1] != '\\') cur_dir_name_[n++] = '\\';
-            name83_to_str(e, cur_dir_name_ + n);
+            int k = 0;
+            while (dname[k] && n + k < 158) { cur_dir_name_[n + k] = dname[k]; k++; }
+            cur_dir_name_[n + k] = 0;
             return 0;
         }
     }
@@ -494,10 +601,12 @@ int FatFilesystem::mkdir(const char *name) {
     str_to_name83(name, fname);
 
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
+            if (lfn_absorb(e)) continue;
             if (e[0] != 0 && e[0] != 0xE5) continue;
             for (int i = 0; i < 11; i++) e[i] = fname[i];
             e[11] = 0x10;
@@ -511,22 +620,18 @@ int FatFilesystem::mkdir(const char *name) {
 }
 
 int FatFilesystem::cat(const char *name) {
-    u8 fname[11];
-    str_to_name83(name, fname);
-
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
             if (e[11] & 0x10) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++)
-                if (e[k] != fname[k]) { match = 0; break; }
-            if (!match) continue;
+            if (!entry_match(e, name)) continue;
             u16 cl = *(u16 *)(e + 26);
             u32 size = *(u32 *)(e + 28);
             u8 dbuf[513];  // +1 for null terminator
@@ -561,22 +666,18 @@ void FatFilesystem::cwd_str(char *out, int max) {
 }
 
 int FatFilesystem::rmdir(const char *name) {
-    u8 fname[11];
-    str_to_name83(name, fname);
-
     int maxs = curdir_secs();
+    scan_reset();
     for (int ss = 0; ss < maxs; ss++) {
         if (read_curdir(ss)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
             if (!(e[11] & 0x10)) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++)
-                if (e[k] != fname[k]) { match = 0; break; }
-            if (!match) continue;
+            if (!entry_match(e, name)) continue;
 
             u16 dir_cl = *(u16 *)(e + 26);
             u8 check[512];
@@ -602,23 +703,24 @@ int FatFilesystem::rmdir(const char *name) {
 }
 
 int FatFilesystem::rename(const char *old_name, const char *new_name) {
-    u8 old83[11], new83[11];
-    str_to_name83(old_name, old83);
+    u8 new83[11];
     str_to_name83(new_name, new83);
 
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) break;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++)
-                if (e[k] != old83[k]) { match = 0; break; }
-            if (!match) continue;
+            if (!entry_match(e, old_name)) continue;
 
+            /* 旧 LFN 槽 (若有) 保留原地: 其 checksum 对应旧短名,
+               改名后校验和不匹配 → entry_name 自动回退到新 8.3 名,
+               不会把旧长名误贴到本目录项 */
             for (int k = 0; k < 11; k++) e[k] = new83[k];
             write_curdir(s);
             return 0;
@@ -628,23 +730,19 @@ int FatFilesystem::rename(const char *old_name, const char *new_name) {
 }
 
 int FatFilesystem::stat(const char *name, int *is_dir) {
-    u8 fname[11];
-    str_to_name83(name, fname);
     *is_dir = 0;
 
     int maxs = curdir_secs();
+    scan_reset();
     for (int s = 0; s < maxs; s++) {
         if (read_curdir(s)) return -1;
         for (int j = 0; j < 512; j += 32) {
             u8 *e = buf_ + j;
             if (e[0] == 0) return -1;
+            if (lfn_absorb(e)) continue;
             if (e[0] == 0xE5) continue;
             if (e[11] & 0x08) continue;
-            int match = 1;
-            for (int k = 0; k < 11; k++) {
-                if (e[k] != fname[k]) { match = 0; break; }
-            }
-            if (!match) continue;
+            if (!entry_match(e, name)) continue;
             *is_dir = (e[11] & 0x10) ? 1 : 0;
             return *(u32 *)(e + 28);
         }

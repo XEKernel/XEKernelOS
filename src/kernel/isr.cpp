@@ -28,14 +28,14 @@ extern "C" void c_isr_handler(registers_t *r) {
        中断时 CR3 翻转导致的交错 (sys_sleep 旧 sti/hlt 实测 #GP) */
     int from_user = ((r->cs & 3) == 3);
 
-    /* ring0 兼容模式: `int 0x80` 发生在同级 (CPL0→CPL0), CPU **不会压入
-       SS/ESP**, 因此 registers_t 尾部的 user_esp/user_ss 两个槽位是栈外
-       数据。fork / 退出路径会读 user_esp, 这里补成"当前程序的栈指针"。
-       (真正的 ring3 路径不受影响 —— 那两槽由 CPU 正确压入。) */
-    if (g_ring0_mode && !from_user) {
-        r->user_esp = r->_esp;
-        r->user_ss  = 0x10;      /* 远跳转只改 CS, SS 仍是内核平坦数据段 */
-    }
+    /* ⚠ 这里**不要**给 ring0(同级) 帧"补" user_esp/user_ss！
+       同级帧只有 13 个字 (edi..eax, vec, err, eip, cs, eflags)，`user_esp`
+       位于偏移 52 —— 那正好是**程序自己的栈顶** (r 是帧起点, r+52 = 中断发生
+       时的 ESP)。往那里写 8 字节会踩掉程序当前帧最底部的局部变量 ——
+       实测把桌面 `text_cn()` 正在构造的 ioctl 结构体头 8 字节 (p.x/p.y/p.c)
+       改坏, 导致 x 变成 0xFFFFF994 的负数 → 文字被画到屏幕外
+       (图标名/窗口标题/按钮/右键菜单整体消失)。真正的消费方都已经自己
+       按 `(r->cs & 3)` 分支处理了 (见 sys_fork / schedule / task_check_signals)。 */
 
     void (*h)(void) = isr_mgr.lookup(vec);
     if (h) h();

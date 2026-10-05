@@ -84,7 +84,12 @@ QEMU 与 VMware 的差异集中在三处，代码里都做了适配并打了日�
 | 24bpp 模式 | 可用            | 常用                       | ✅ gfx 本就支持；鼠标光标读写已按 bpp 处理                                                          |
 
 
-### 5.1 未解决：VMware 上 `iret` 进 ring3 偶发 triple fault
+### 5.1 ~~未解决~~ → **2026-10-05 已定位并绕过**：VMware 上 ring3 入口 triple fault
+
+> **结论速览（细节见 §5.1.1~§5.1.4）**：`iret` 进 ring3 **成功**；失败点是
+> **ring3→ring0 的 `int 0x80` 特权栈切换**（这台机器 VMware 前端不可用）。
+> 已用 **Ring0 兼容模式**（`g_ring0_mode`，默认 true）绕过，VMware 上桌面可正常使用；
+> 完整 ring3 行为请用 QEMU。渲染类问题**与 VMware 无关**，见 `docs/ISSUES_2026-10-05.md`。
 
 现象：约 2/3 概率在 `loader: flat binary 38964B` 之后弹  
 "virtual CPU ... shutdown state"（即 guest 三重故障），点 OK 重启后能正常进桌面。
@@ -177,7 +182,7 @@ qemu-mcp-server 会一起停），Windows Sandbox / VBS-HVCI / Credential Guard 
 同类案例（VMware 社区，对话框文案与 `IOPL_Init: Hyper-V detected by CPUID` +  
 `Monitor Mode: ULM` 完全同签名）：答复明确指出「宿主开着 Hyper-V/WSL2/VBS 是  
 问题根源」，提问者**关掉 VBS/Hyper-V 后该 VM 恢复正常**：  
-<https://community.broadcom.com/communities/community-home/digestviewer/viewthread?GroupId=7171\&MessageKey=bcaaca79-066d-4f52-b364-8e11f8453e62\&CommunityKey=fb707ac3-9412-4fad-b7af-018f5da56d9f>
+<https://community.broadcom.com/communities/community-home/digestviewer/viewthread?GroupId=7171\\\&MessageKey=bcaaca79-066d-4f52-b364-8e11f8453e62\\\&CommunityKey=fb707ac3-9412-4fad-b7af-018f5da56d9f>
 
 **如果关掉后仍然 triple fault**，那说明确实是 guest 侧问题，此时按 §5.1 表里  
 「PSE 4MB 页 + ring3」这条线做二分（把用户页目录里 0–64MB 的 PSE 页统一改成 4KB 页，  
@@ -192,7 +197,8 @@ qemu-mcp-server 会一起停），Windows Sandbox / VBS-HVCI / Credential Guard 
 **宿主侧结论已闭环（不是宿主的原因）**：`bcdedit /set hypervisorlaunchtype off` + 重启后  
 `HypervisorPresent=False`、`Monitor Mode` 从 `ULM` 变成 **`CPL0`**（原生 monitor 生效），  
 **但崩溃点和之前一模一样**，`serial.log` 仍然停在 `enter_user:` 那一行。  
-（副作用：这段时间 WSL2 起不来；恢复用 `bcdedit /set hypervisorlaunchtype auto` + 重启。）
+（副作用：这段时间 WSL2 起不来；**已于 2026-10-05 19:23 `bcdedit /set hypervisorlaunchtype auto`
+恢复**，下次重启后 WSL2 / qemu-mcp-server 回来。）
 
 于是转回 guest 侧。注意一个之前所有人都忽略的前提：**`loader: flat binary 42268B`  
 只证明了长度对，内容从来没校验过**。如果 ATA PIO 把 42KB 的用户程序读花了，  
@@ -266,45 +272,51 @@ IRR 上，`iret` 一开 IF，CPU 会在**第一条用户指令之前**立刻投�
 
 **已排除清单** —— 每一条都是用插桩或替换变量实测掉的，不是推测：
 
-| 假设 | 怎么排除的 | 结果 |
-|---|---|---|
-| 宿主 hypervisor（ULM/WHP 兼容模式） | `bcdedit /set hypervisorlaunchtype off` + 重启 | `Monitor Mode: ULM` → **`CPL0`**、`HypervisorPresent=False`，**现象不变** |
-| 用户程序读盘被破坏 | 装入后立刻算头 16 字节 + 两个 FNV-1a 指纹 | 与 QEMU 逐位一致（`fnv_file=0xA2237416 fnv_map=0xCA3B7416`） |
-| GDT 描述符非法 | 转储 GDT[4]/[5]/[6] 的原始 8 字节 | `FFFF000000F2CF00` / `FFFF000000FACF00` / `670000E0048B4000`，与 QEMU 完全一致，DPL=3 合法 |
-| 页表映射错 | 在**当前用户页目录**下逐个走页表 | EIP `pde=0x50007 pte=0x400007`；KSTK/GDT/IDT/TSS 落在 PDE[0] 的 4MB 页（`pde=0xE3`）；逐值一致 |
-| TSS ESP0 目标页没映射 | 新增转储条目 | `map ESP0(TSS栈顶) pde=0x010000E3 PA=0x010F0C70 (4MB)` → **映射正常** |
-| 挂起 IRQ0 在 `iret` 后被立刻投递 | `g_ring3_irq_on=false`（IF=0 进 ring3） | **仍然 `Triple fault.`** |
+| 假设                          | 怎么排除的                                        | 结果                                                                                 |
+| --------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 宿主 hypervisor（ULM/WHP 兼容模式） | `bcdedit /set hypervisorlaunchtype off` + 重启 | `Monitor Mode: ULM` → **`CPL0`**、`HypervisorPresent=False`，**现象不变**                |
+| 用户程序读盘被破坏                   | 装入后立刻算头 16 字节 + 两个 FNV-1a 指纹                 | 与 QEMU 逐位一致（`fnv_file=0xA2237416 fnv_map=0xCA3B7416`）                              |
+| GDT 描述符非法                   | 转储 GDT[4]/[5]/[6] 的原始 8 字节                   | `FFFF000000F2CF00` / `FFFF000000FACF00` / `670000E0048B4000`，与 QEMU 完全一致，DPL=3 合法  |
+| 页表映射错                       | 在**当前用户页目录**下逐个走页表                           | EIP `pde=0x50007 pte=0x400007`；KSTK/GDT/IDT/TSS 落在 PDE[0] 的 4MB 页（`pde=0xE3`）；逐值一致 |
+| TSS ESP0 目标页没映射             | 新增转储条目                                       | `map ESP0(TSS栈顶) pde=0x010000E3 PA=0x010F0C70 (4MB)` → **映射正常**                    |
+| 挂起 IRQ0 在 `iret` 后被立刻投递     | `g_ring3_irq_on=false`（IF=0 进 ring3）         | **仍然 `Triple fault.`**                                                             |
 
-> **排障方法论**：判定"崩没崩"要读 `vmware.log` 里的 **`Triple fault.`** 行，
-> **不要看弹窗** —— 那个对话框一旦勾过 "Do not show this message again" 就不再出现，
+> **排障方法论**：判定"崩没崩"要读 `vmware.log` 里的 **`Triple fault.`** 行，  
+> **不要看弹窗** —— 那个对话框一旦勾过 "Do not show this message again" 就不再出现，  
 > 很容易把"崩了"误判成"只是卡住了"（这次踩过两次）。
 
-**ring3 桩实验**（零内核改动 —— 直接替换 `build/desktop.bin` 头部，
+**ring3 桩实验**（零内核改动 —— 直接替换 `build/desktop.bin` 头部，  
 原文件备份为 `build/desktop.bin.orig`）：
 
-- **桩 A**：`mov eax,1` → `mov ebx,msg` → `mov ecx,16` → `int 0x80` → `jmp $`
-  → VMware 上**仍然 `Triple fault.`**，串口既无 `ring3 sys=` 也无 `RING3-STUB-OK!`。
-  **桩的第一条指令是 `mov`，`mov` 不可能出错** ⇒ 崩溃点只剩两个：
+- **桩 A**：`mov eax,1` → `mov ebx,msg` → `mov ecx,16` → `int 0x80` → `jmp $`  
+  → VMware 上**仍然 `Triple fault.`**，串口既无 `ring3 sys=` 也无 `RING3-STUB-OK!`。  
+  **桩的第一条指令是 `mov`，`mov` 不可能出错** ⇒ 崩溃点只剩两个：  
   ① **`iret` 本身**；② **紧接的 `int 0x80` 的 ring3→ring0 特权栈切换**。
-- **桩 B**：前 2 字节改成 `EB FE`（纯 `jmp $`，既不碰内存也不碰 syscall）
+- **桩 B**：前 2 字节改成 `EB FE`（纯 `jmp $`，既不碰内存也不碰 syscall）  
   → 用来把上面两者**分离开**。
 
 **桩 B 的判读**：
 
-| `vmware.log` | 含义 | 下一步 |
-|---|---|---|
-| **没有 `Triple fault.`**（画面冻住是预期的） | **`iret` 成功进了 ring3** ⇒ 元凶是 **`int 0x80` 的 ring3→ring0 投递** | 深挖 TSS 特权栈切换；也正好解释"桌面第一个 syscall 之后就死" |
-| **有 `Triple fault.`** | **`iret` 本身在 VMware 前端上失败** | 改用 `retf`（远返回）进 ring3；或把用户页目录的页粒度统一成 4KB（消除 PSE 与 4KB 混用） |
+| `vmware.log`                     | 含义                                                          | 下一步                                                       |
+| -------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------- |
+| **没有 `Triple fault.`**（画面冻住是预期的） | **`iret` 成功进了 ring3** ⇒ 元凶是 **`int 0x80` 的 ring3→ring0 投递** | 深挖 TSS 特权栈切换；也正好解释"桌面第一个 syscall 之后就死"                    |
+| **有 `Triple fault.`**            | **`iret` 本身在 VMware 前端上失败**                                 | 改用 `retf`（远返回）进 ring3；或把用户页目录的页粒度统一成 4KB（消除 PSE 与 4KB 混用） |
 
-**现状提醒（收尾时要做）**：
-`build/desktop.bin` 目前是**打过桩的** —— 定位结束后必须
-`cp build/desktop.bin.orig build/desktop.bin && make` 还原并重建 `disk.img`。
-另外 `g_ring3_irq_on` 当前为 **false**（IF=0），`hypervisorlaunchtype` 仍为 **Off**。
+**收尾状态（2026-10-05 19:23 已全部归位）**：
+
+- `build/desktop.bin` **已还原**（`desktop.bin.orig` 备份保留，桩已移除）。
+- `g_ring0_mode = true`（Ring0 兼容模式，VMware 上靠它才能出桌面）；
+  `g_ring3_irq_on = false`（IF=0，Ring0 模式下无实际影响）。
+- `hypervisorlaunchtype` **已改回 `auto`** → 下次重启后宿主 hypervisor 恢复，
+  WSL2 / qemu-mcp-server 可用（**两种 monitor 模式下本 bug 表现完全一致，恢复它不影响复现**）。
+- 渲染问题（图标名/标题栏文字/三大金刚键/右键菜单/拖影/`CAT` 乱码）**已定位并修复**，
+  根因是 ring0 模式下自加的 `r->user_esp` 补丁踩坏程序栈上的 ioctl 结构体（详见
+  `docs/ISSUES_2026-10-05.md`），**与 VMware 无关**（QEMU 上同样复现）。
 
 #### 5.1.4 结论与 Ring0 兼容模式（2026-10-05 当日收口）
 
-**桩 B（纯 `jmp $`）的结果是决定性的**：VMware 上 **没有 `Triple fault.`**，
-CPU 在 ring3 空转、VM 一直活着。而桩 A（多一次 `int 0x80`）必崩。两者只差那一次
+**桩 B（纯 `jmp $`）的结果是决定性的**：VMware 上 **没有 `Triple fault.`**，  
+CPU 在 ring3 空转、VM 一直活着。而桩 A（多一次 `int 0x80`）必崩。两者只差那一次  
 **ring3→ring0 的特权级切换式中断投递**。至此结论闭合：
 
 | 环节 | VMware 实测 |
@@ -312,19 +324,19 @@ CPU 在 ring3 空转、VM 一直活着。而桩 A（多一次 `int 0x80`）必�
 | `iret` 进 ring3 | ✅ **成功** |
 | ring3→ring0 的 `int 0x80` 投递（IDT 门 + TSS 切栈） | ❌ **三重故障** |
 
-而这条投递路径需要的四样东西 —— IDT 门、TSS 描述符、`SS0=0x10`、ESP0 目标页映射
-—— **全部与 QEMU 逐值相同且验证正确**。也就是说：**同样的表、同样的状态，
+而这条投递路径需要的四样东西 —— IDT 门、TSS 描述符、`SS0=0x10`、ESP0 目标页映射  
+—— **全部与 QEMU 逐值相同且验证正确**。也就是说：**同样的表、同样的状态，  
 QEMU 能投递，VMware 直接三重故障。**
 
-> 补充：`syscall_handler()` 的 `ring3 sys=` 是**入口第一件事**就打印，它从未出现 ——
+> 补充：`syscall_handler()` 的 `ring3 sys=` 是**入口第一件事**就打印，它从未出现 ——  
 > 证明 CPU 根本没完成那次切换（不是我们的 C 代码崩的）。
 
-**⇒ 判定：这台机器上 VMware 前端的 ring3→ring0 特权栈切换不可用。**
+**⇒ 判定：这台机器上 VMware 前端的 ring3→ring0 特权栈切换不可用。**  
 （`ULM` 与 `CPL0` 两种 monitor 模式都一样，所以与宿主 hypervisor 无关。）
 
 **应对：Ring0 兼容模式**（`src/kernel/user.cpp: bool g_ring0_mode`，当前 = `true`）。
 
-原理：不再用 `iret` 进 ring3，而是**远跳转** `ljmpl *(CS=0x18)`，程序以 **ring0** 运行。
+原理：不再用 `iret` 进 ring3，而是**远跳转** `ljmpl *(CS=0x18)`，程序以 **ring0** 运行。  
 这样后续 `int 0x80` 发生在**同级**，CPU 不会做特权栈切换 —— 正好绕开故障点。
 
 ```c
@@ -344,17 +356,15 @@ if (g_ring0_mode) {
 | `RUN <程序>` 不可用 | **结构性限制**：CPL0 下 `iretd` 不弹 SS/ESP，而本内核的任务切换正是靠 ring3 帧里的 SS/ESP 恢复目标任务的应用栈 → fork 出的子进程必然跑飞。已让 `sys_fork` 在这种情况下**干净返回 -1**（不再 panic）。 |
 | 完整功能 | 要看完整 ring3 行为请用 **QEMU**（`make run`，本仓全绿）或 VirtualBox / 真机。 |
 
-> **2026-10-05 补充**：初次在 VMware 上看到桌面时出现的「窗口标题栏文字/三大金刚键
-> 不显示、图标名不显示、右键菜单不弹、拖动有拖影」**不是 VMware 的问题**，
-> 而是 Ring0 兼容模式里一处补丁错误（往同级帧不存在的 `user_esp` 槽位写值，
-> 踩坏了程序正在构造的 ioctl 结构体）。已在 `isr.cpp` 修正，QEMU 截图与 ring3
-> 基准逐像素一致。完整记录见 `docs/ISSUES_2026-10-05.md`。
+> **2026-10-05 补充**：初次在 VMware 上看到桌面时出现的「窗口标题栏文字/三大金刚键  
+> 不显示、图标名不显示、右键菜单不弹、拖动有拖影」**不是 VMware 的问题**，  
+> 而是 Ring0 兼容模式里一处补丁错误（往同级帧不存在的 `user_esp` 槽位写值，  
+> 踩坏了程序正在构造的 ioctl 结构体）。已在 `isr.cpp` 修正，QEMU 截图与 ring3  
+> 基准逐像素一致。完整记录见 `docs/ISSUES_2026-10-05.md`。  
 > 冒烟回归里现在只剩 `RUN` 系列失败（即上表的结构性限制）。
 
-**要切回真正的 Ring3 用户态**：把 `g_ring0_mode` 改成 `false` 重新 `make`
+**要切回真正的 Ring3 用户态**：把 `g_ring0_mode` 改成 `false` 重新 `make`  
 （QEMU 上功能完整；VMware 上会立刻三重故障）。
-
-
 
 ### 5.2 2026-10-05 复验：QEMU 侧仍无法复现
 

@@ -101,6 +101,31 @@ static int load_flat_binary(const char *path, const char *args) {
         for (u32 i = (u32)sz; i < map_sz; i++) z[i] = 0;
     }
 
+    /* ---- 装载完整性取证 (VMware triple fault 排查) ----
+       "flat binary 42268B" 只证明**长度**对。若 ATA PIO 把内容读花,
+       garbage 里随便一条 iret / sysret 就能在零输出的情况下三重故障 —
+       这正好解释"没有任何异常投递""卡点固定""QEMU 不复现"。
+       这里把读进来的头 16 字节 + 两个 FNV-1a 指纹打到串口:
+         fnv_file = 文件本体 (sz 字节) 的指纹
+         fnv_map  = 清完 .bss 后整段映射区 (map_sz 字节) 的指纹
+       与本地 `build/desktop.bin` 对不上 = 读盘/搬运被破坏。 */
+    {
+        const u8 *d = (const u8 *)USER_LOAD_ADDR;
+        serial_write_str("img: head=");
+        for (int i = 0; i < 16; i++) {
+            serial_write_char("0123456789ABCDEF"[d[i] >> 4]);
+            serial_write_char("0123456789ABCDEF"[d[i] & 15]);
+        }
+        u32 h1 = 2166136261u;
+        for (int i = 0; i < sz; i++) { h1 ^= d[i]; h1 *= 16777619u; }
+        u32 h2 = 2166136261u;
+        for (u32 i = 0; i < map_sz; i++) { h2 ^= d[i]; h2 *= 16777619u; }
+        serial_write_str(" fnv_file=0x"); serial_write_u32(h1);
+        serial_write_str(" fnv_map=0x");  serial_write_u32(h2);
+        serial_write_str(" map_sz=0x");   serial_write_u32(map_sz);
+        serial_write_char('\n');
+    }
+
     int tpid = task_create_user((void *)USER_LOAD_ADDR, USER_STACK_TOP, user_pd);
     serial_write_str("launch: task pid=");
     serial_write_u32((u32)tpid);

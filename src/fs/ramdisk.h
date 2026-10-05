@@ -30,6 +30,11 @@ public:
     int rmdir(const char *) override { return -1; }
     int rename(const char *, const char *) override { return -1; }
     int dir(const char *path) override;
+    /* 结构化目录列表 (资源管理器 / SYS_VFS_LIST 用)。
+       缺这个 override 时 vfs_list_dir("/tmp") 会落到 Filesystem 的
+       默认实现直接返回 -1 —— 即 /tmp 在 GUI 里"列不出文件"。
+       平铺 FS, path 忽略。 */
+    int list(const char *path, DirEntry *e, u32 max) override;
 
     /* ---- Legacy API (backward compat) ---- */
     int  create(const char *name, const u8 *data, u32 size);

@@ -26,7 +26,7 @@ static void li(int v) {
     while (i) lc(b[--i]);
 }
 static void lflush(void) {
-    syscall4(SYS_WRITE, (int)line, lp);
+    syscall4(SYS_WRITE, (int)line, lp, 0);
     lp = 0;
 }
 

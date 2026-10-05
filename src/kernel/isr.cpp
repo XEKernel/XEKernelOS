@@ -28,6 +28,15 @@ extern "C" void c_isr_handler(registers_t *r) {
        中断时 CR3 翻转导致的交错 (sys_sleep 旧 sti/hlt 实测 #GP) */
     int from_user = ((r->cs & 3) == 3);
 
+    /* ring0 兼容模式: `int 0x80` 发生在同级 (CPL0→CPL0), CPU **不会压入
+       SS/ESP**, 因此 registers_t 尾部的 user_esp/user_ss 两个槽位是栈外
+       数据。fork / 退出路径会读 user_esp, 这里补成"当前程序的栈指针"。
+       (真正的 ring3 路径不受影响 —— 那两槽由 CPU 正确压入。) */
+    if (g_ring0_mode && !from_user) {
+        r->user_esp = r->_esp;
+        r->user_ss  = 0x10;      /* 远跳转只改 CS, SS 仍是内核平坦数据段 */
+    }
+
     void (*h)(void) = isr_mgr.lookup(vec);
     if (h) h();
 

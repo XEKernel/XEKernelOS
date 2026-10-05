@@ -63,8 +63,24 @@ int RamDisk::dir(const char * /*path*/) {
     return 0;
 }
 
-/* ---- Legacy API ---- */
+/* VFS 结构化目录列表 — 供 SYS_VFS_LIST / 资源管理器列举 /tmp。
+   平铺 FS: path 忽略, 按槽位顺序输出所有在用文件。 */
+int RamDisk::list(const char * /*path*/, DirEntry *e, u32 max) {
+    if (!e || max == 0) return -1;
+    u32 n = 0;
+    for (int i = 0; i < RAMDISK_MAX_FILES && n < max; i++) {
+        if (!files_[i].used) continue;
+        e[n].is_dir = 0;
+        e[n].size   = files_[i].size;
+        int j = 0;
+        while (j < 31 && files_[i].name[j]) { e[n].name[j] = files_[i].name[j]; j++; }
+        e[n].name[j] = 0;
+        n++;
+    }
+    return (int)n;
+}
 
+/* ---- Legacy API ---- */
 int RamDisk::find_free() {
     for (int i = 0; i < RAMDISK_MAX_FILES; i++)
         if (!files_[i].used) return i;

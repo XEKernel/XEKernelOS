@@ -62,7 +62,14 @@ void mm_init(void) {
 
     bitmap    = (u8 *)bm_start;
     first_page = bm_start + bm_pages * PAGE_SIZE;
-    free_count = (mem_top - first_page) / PAGE_SIZE;
+
+    /* 位图自身占用的 bm_pages 页必须从"可分配页数"里扣除。
+       旧实现 total_pages 从 bm_start 起算, 而 mm_alloc_page 返回的地址
+       从 first_page 起算 → 尾部 bm_pages 次分配会返回内存上界之外的
+       物理地址 (mem_top 之前已被 mm_reserve 之外的区域), 属于越界分配。
+       实际未触发只是因为可分配页远多于用量, 属潜在缺陷。 */
+    total_pages = (total_pages > bm_pages) ? (total_pages - bm_pages) : 0;
+    free_count  = total_pages;
 
     for (u32 i = 0; i < bm_bytes; i++) bitmap[i] = 0;
     for (u32 i = 0; i < bm_pages; i++) {

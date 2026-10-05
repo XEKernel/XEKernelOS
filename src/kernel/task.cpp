@@ -432,6 +432,11 @@ void schedule(registers_t *r) {
         serial_write_u32(current_task->pid);
         serial_write_str(" -> pid ");
         serial_write_u32(nt->pid);
+        /* 诊断 (ring0 兼容模式排查): 恢复目标的上下文取值 */
+        serial_write_str(" eip=0x"); serial_write_u32(nt->eip);
+        serial_write_str(" cs=0x");  serial_write_u32(nt->cs);
+        serial_write_str(" esp=0x"); serial_write_u32(nt->esp);
+        serial_write_str(" uesp=0x");serial_write_u32(nt->user_esp);
         serial_write_char('\n');
     }
 

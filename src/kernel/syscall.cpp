@@ -361,6 +361,16 @@ static void sys_fat_write(registers_t *r) {
 /* ---- fork: clone current task with copied address space ---- */
 
 static void sys_fork(registers_t *r) {
+    /* ring0 兼容模式: CPL0 下 `iretd` 不会弹出 SS/ESP, 而本内核的任务切换
+       (schedule 原地改帧 → common_isr 的 popa/add 8/iretd) 正是靠 ring3 帧里
+       的 SS/ESP 来恢复目标任务的应用栈。同特权帧没有这两个字 → 恢复后 ESP
+       落在目标任务的内核栈上 → 子进程必然跑飞 (实测 EIP 落到 0x43FE9F)。
+       这是该模式的结构性限制, 因此直接拒绝: 让 shell 报错, 而不是把 VM 打死。 */
+    if (g_ring0_mode) {
+        serial_write_str("fork: ring0 兼容模式下不支持 (返回 -1)\n");
+        r->eax = (u32)-1;
+        return;
+    }
     if (!current_task || current_task->pid == 0) {
         r->eax = (u32)-1;
         return;
@@ -477,20 +487,39 @@ static void sys_fork(registers_t *r) {
     list_add_tail(&child->list, &ready_queue);
     list_add_tail(&child->all_list, &all_tasks);
 
-    /* Copy kernel stack frame to child */
-    u32 *psp = (u32 *)(current_task->kernel_stack + KSTACK_SIZE);
+    /* Copy kernel stack frame to child.
+       帧长取决于**是否发生了特权切换**: ring3 帧由 CPU 额外压入 SS/ESP
+       → 15 个字; 同级 (ring0) 帧只有 EFLAGS/CS/EIP 3 个字 + err/vec +
+       pusha = 13 个字 —— ring0 兼容模式下 `int 0x80` 不切栈就是这种。
+       旧实现用 (kernel_stack_top - r) 推算帧长, 隐含"帧一定位于任务内核栈顶"
+       这个**前提在 ring0 模式下不成立** (帧在程序自己的栈上) → 算出的字数是
+       天文数字 → 从内核栈顶一路往下读越界 → #PF (实测 EIP 落在本函数内)。
+       帧的起点就是 r 本身, 因此直接按长度从 r 起拷; 目标固定留 15 个字的
+       registers_t 空间, ring0 时多出的 user_esp/user_ss 显式填好。 */
+    int frame_words = (r->cs & 3) ? 15 : 13;
     u32 *csp = (u32 *)(child->kernel_stack + KSTACK_SIZE);
-    int frame_words = (int)(psp - (u32 *)r);
+    u32 *dst = csp - 15;
     for (int i = 0; i < frame_words; i++)
-        csp[-i - 1] = psp[-i - 1];
+        dst[i] = ((u32 *)r)[i];
 
-    /* Child's eax = 0, parent's eax = child PID */
-    registers_t *cr = (registers_t *)(csp - frame_words);
-    cr->eax = 0;
-    child->esp = (u32)cr;
+    registers_t *cr = (registers_t *)dst;
+    cr->eax = 0;                        /* fork 子进程首次返回 0 */
+    cr->user_esp = child->user_esp;
+    cr->user_ss  = child->user_ss;
+    /* ⚠ `_esp` 槽的约定: 它的内容必须指向帧内 **vec 槽** (帧起始+32字节),
+       因为 common_isr 的返回序列是 `popa` (会从该槽加载 ESP) → `add esp,8`
+       → `iretd`; 只有 vec 槽 +8 才正好落在 eip 槽上。
+       这正是 pusha 在真实中断帧里记录的值 (硬件压入 SS/ESP/EFLAGS/CS/EIP +
+       stub 压 err/vec 之后 ESP 指向 vec 槽)。写成帧起始会让 iretd 从 esi/ebp
+       槽里取"EIP" → 跑飞到栈地址 (实测 EIP=0x0043FE9F)。 */
+    child->esp = (u32)cr + 32;
 
     serial_write_str("fork: child pid ");
     serial_write_u32(child->pid);
+    serial_write_str(" eip=0x"); serial_write_u32(child->eip);
+    serial_write_str(" cs=0x");  serial_write_u32(child->cs);
+    serial_write_str(" esp=0x"); serial_write_u32(child->esp);
+    serial_write_str(" frame=0x"); serial_write_u32((u32)cr);
     serial_write_char('\n');
     r->eax = child->pid;
 }
@@ -1160,7 +1189,7 @@ void syscall_cleanup_fds(task_struct *t) {
 extern "C" void syscall_handler(registers_t *r) {
     /* 诊断: 记录 ring3 任务最早几次系统调用 — 用于定位"切到用户态即
        triple fault"这类问题 (能打印出来就说明 ring3 已经真正跑起来) */
-    if (r->cs & 3) {
+    if ((r->cs & 3) || g_ring0_mode) {
         static int n = 0;
         if (n < 6) {
             n++;
